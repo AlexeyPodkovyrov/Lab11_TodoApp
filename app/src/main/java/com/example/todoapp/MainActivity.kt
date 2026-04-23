@@ -1,14 +1,17 @@
 package com.example.todoapp
 
+import android.app.Activity
+import android.content.Intent
 import android.os.Bundle
 import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.recyclerview.widget.ItemTouchHelper
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
-import androidx.recyclerview.widget.ItemTouchHelper
 import com.google.android.material.snackbar.Snackbar
 
 class MainActivity : AppCompatActivity() {
@@ -20,6 +23,28 @@ class MainActivity : AppCompatActivity() {
     private lateinit var adapter: TaskAdapter
     private lateinit var recyclerView: RecyclerView
     private lateinit var textTaskCount: TextView
+
+    // Регистрация ActivityResultLauncher для получения результата из DetailActivity
+    private val editTaskLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val data = result.data
+            data?.let {
+                if (it.hasExtra("edited_text")) {
+                    //  Редактирование задачи
+                    val position = it.getIntExtra("task_position", -1)
+                    val newText = it.getStringExtra("edited_text")
+                    if (position != -1 && newText != null) {
+                        tasks[position] = newText
+                        adapter.updateTask(position, newText)
+                        updateTaskCount()
+                        Toast.makeText(this, "Задача обновлена", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -35,7 +60,7 @@ class MainActivity : AppCompatActivity() {
         val buttonShow = findViewById<Button>(R.id.buttonShow)
         val textEntered = findViewById<TextView>(R.id.textEntered)
 
-        // Блок 3: ToDo-список с RecyclerView
+        // Блок 3: ToDo список
         val editTextTask = findViewById<EditText>(R.id.editTextTask)
         val buttonAddTask = findViewById<Button>(R.id.buttonAddTask)
         val buttonDeleteLast = findViewById<Button>(R.id.buttonDeleteLast)
@@ -55,7 +80,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // "Вы ввели"
+        // Обновление интерфейса
         updateCounterDisplay(textCounter)
 
         if (enteredText.isNotEmpty()) {
@@ -64,7 +89,7 @@ class MainActivity : AppCompatActivity() {
 
         updateTasksDisplay()
 
-        // "+1" и "Сбросить счётчик"
+        // Обработчики
         buttonIncrement.setOnClickListener {
             counter++
             updateCounterDisplay(textCounter)
@@ -75,14 +100,12 @@ class MainActivity : AppCompatActivity() {
             updateCounterDisplay(textCounter)
         }
 
-        // "Показать"
         buttonShow.setOnClickListener {
             val inputText = editTextInput.text.toString()
             enteredText = inputText
             textEntered.text = "${getString(R.string.label_entered)} $inputText"
         }
 
-        // Обработчик добавления задачи
         buttonAddTask.setOnClickListener {
             val task = editTextTask.text.toString().trim()
             if (task.isNotBlank()) {
@@ -91,27 +114,20 @@ class MainActivity : AppCompatActivity() {
                 updateTaskCount()
                 editTextTask.text.clear()
                 recyclerView.scrollToPosition(tasks.size - 1)
-
                 Toast.makeText(this, "Задача добавлена", Toast.LENGTH_SHORT).show()
             } else {
                 Toast.makeText(this, R.string.toast_empty_task, Toast.LENGTH_SHORT).show()
             }
         }
 
-        // Обработчик удаления последней задачи
         buttonDeleteLast.setOnClickListener {
             if (tasks.isNotEmpty()) {
                 val lastIndex = tasks.size - 1
-                val wasChecked = adapter.getTaskCheckedState(lastIndex)
-                val deletedTask = adapter.deleteTask(lastIndex)
+                val deletedTask = tasks[lastIndex]
+                tasks.removeAt(lastIndex)
+                adapter.notifyItemRemoved(lastIndex)
                 updateTaskCount()
-
-                Snackbar.make(recyclerView, "Задача \"$deletedTask\" удалена", Snackbar.LENGTH_LONG)
-                    .setAction("Отмена") {
-                        adapter.restoreTask(lastIndex, deletedTask, wasChecked)
-                        updateTaskCount()
-                    }
-                    .show()
+                Toast.makeText(this, "Последняя задача удалена", Toast.LENGTH_SHORT).show()
             } else {
                 Toast.makeText(this, "Список задач пуст", Toast.LENGTH_SHORT).show()
             }
@@ -124,8 +140,14 @@ class MainActivity : AppCompatActivity() {
         adapter = TaskAdapter(
             tasks = tasks,
             onTaskCheckedChange = { position, isChecked ->
-                // Обновление счётчика задач
                 updateTaskCount()
+            },
+            onItemClick = { position ->
+                // Открытие DetailActivity для редактирования
+                val intent = Intent(this, DetailActivity::class.java)
+                intent.putExtra("task_text", tasks[position])
+                intent.putExtra("task_position", position)
+                editTaskLauncher.launch(intent)
             }
         )
 
@@ -145,13 +167,15 @@ class MainActivity : AppCompatActivity() {
             override fun onSwiped(viewHolder: RecyclerView.ViewHolder, direction: Int) {
                 val position = viewHolder.adapterPosition
                 if (position != RecyclerView.NO_POSITION) {
-                    val wasChecked = adapter.getTaskCheckedState(position)
-                    val deletedTask = adapter.deleteTask(position)
+                    val deletedTask = tasks[position]
+                    tasks.removeAt(position)
+                    adapter.notifyItemRemoved(position)
                     updateTaskCount()
 
-                    Snackbar.make(recyclerView, "Задача \"$deletedTask\" удалена", Snackbar.LENGTH_LONG)
+                    Snackbar.make(recyclerView, "Задача удалена", Snackbar.LENGTH_LONG)
                         .setAction("Отмена") {
-                            adapter.restoreTask(position, deletedTask, wasChecked)
+                            tasks.add(position, deletedTask)
+                            adapter.notifyItemInserted(position)
                             updateTaskCount()
                         }
                         .show()
@@ -171,7 +195,6 @@ class MainActivity : AppCompatActivity() {
         adapter.notifyDataSetChanged()
     }
 
-    // Обновление количества задач
     private fun updateTaskCount() {
         textTaskCount.text = getString(R.string.label_task_count, tasks.size)
     }

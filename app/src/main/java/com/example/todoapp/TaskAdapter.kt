@@ -13,13 +13,12 @@ import androidx.recyclerview.widget.RecyclerView
 class TaskAdapter(
     private val tasks: MutableList<String>,
     private val onTaskCheckedChange: (Int, Boolean) -> Unit,
+    private val onItemClick: (Int) -> Unit
 ) : RecyclerView.Adapter<TaskAdapter.TaskViewHolder>() {
 
-    // Состояния чекбоксов
     private val checkedStates = mutableMapOf<Int, Boolean>()
 
     init {
-        // По умолчанию состояние false
         tasks.indices.forEach { index ->
             checkedStates[index] = false
         }
@@ -43,20 +42,18 @@ class TaskAdapter(
 
         holder.textTask.text = task
 
-        // Цвет карточек в зависимости от чётности позиции
+        // Цвет карточки по четности
         if (position % 2 == 0) {
-            // Чётные
             holder.cardView.setCardBackgroundColor(
                 ContextCompat.getColor(holder.itemView.context, android.R.color.white)
             )
         } else {
-            // Нечётные
             holder.cardView.setCardBackgroundColor(
                 ContextCompat.getColor(holder.itemView.context, R.color.light_gray)
             )
         }
 
-        // Зачеркивание задач
+        // Перечеркивание
         if (isChecked) {
             holder.textTask.paintFlags = holder.textTask.paintFlags or Paint.STRIKE_THRU_TEXT_FLAG
             holder.textTask.alpha = 0.6f
@@ -65,58 +62,25 @@ class TaskAdapter(
             holder.textTask.alpha = 1.0f
         }
 
+        // Чекбокс
         holder.checkTask.setOnCheckedChangeListener(null)
         holder.checkTask.isChecked = isChecked
-
-        // Обработка изменения состояния чекбокса
         holder.checkTask.setOnCheckedChangeListener { _, isCheckedNow ->
             checkedStates[position] = isCheckedNow
             onTaskCheckedChange(position, isCheckedNow)
             notifyItemChanged(position)
         }
+
+        // Обработка клика на карточку
+        holder.itemView.setOnClickListener {
+            onItemClick(position)
+        }
     }
 
     override fun getItemCount(): Int = tasks.size
 
-    // Удаление задачи
-    fun deleteTask(position: Int): String {
-        val deletedTask = tasks[position]
-        tasks.removeAt(position)
-
-        // Обновление состояния задачи
-        val newStates = mutableMapOf<Int, Boolean>()
-        checkedStates.forEach { (index, state) ->
-            if (index < position) {
-                newStates[index] = state
-            } else if (index > position) {
-                newStates[index - 1] = state
-            }
-        }
-        checkedStates.clear()
-        checkedStates.putAll(newStates)
-
-        notifyItemRemoved(position)
-        return deletedTask
+    fun updateTask(position: Int, newText: String) {
+        tasks[position] = newText
+        notifyItemChanged(position)
     }
-
-    // Восстановление удаленной задачи
-    fun restoreTask(position: Int, task: String, wasChecked: Boolean) {
-        tasks.add(position, task)
-
-        val newStates = mutableMapOf<Int, Boolean>()
-        checkedStates.forEach { (index, state) ->
-            if (index < position) {
-                newStates[index] = state
-            } else {
-                newStates[index + 1] = state
-            }
-        }
-        checkedStates.clear()
-        checkedStates.putAll(newStates)
-        checkedStates[position] = wasChecked
-
-        notifyItemInserted(position)
-    }
-
-    fun getTaskCheckedState(position: Int): Boolean = checkedStates[position] ?: false
 }
