@@ -11,18 +11,14 @@ import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.RecyclerView
 
 class TaskAdapter(
-    private val tasks: MutableList<String>,
-    private val onTaskCheckedChange: (Int, Boolean) -> Unit,
-    private val onItemClick: (Int) -> Unit
+    private var tasks: List<String>,
+    private val onItemClick: (Int) -> Unit,
+    private val onItemLongClick: (Int) -> Unit,
+    private val onTaskCheckedChange: (String, Boolean) -> Unit
 ) : RecyclerView.Adapter<TaskAdapter.TaskViewHolder>() {
 
-    private val checkedStates = mutableMapOf<Int, Boolean>()
-
-    init {
-        tasks.indices.forEach { index ->
-            checkedStates[index] = false
-        }
-    }
+    // Состояние чекбоксов
+    private var completedTasks = emptySet<String>()
 
     class TaskViewHolder(itemView: View) : RecyclerView.ViewHolder(itemView) {
         val cardView: CardView = itemView.findViewById(R.id.cardView)
@@ -38,7 +34,7 @@ class TaskAdapter(
 
     override fun onBindViewHolder(holder: TaskViewHolder, position: Int) {
         val task = tasks[position]
-        val isChecked = checkedStates[position] ?: false
+        val isChecked = task in completedTasks
 
         holder.textTask.text = task
 
@@ -53,7 +49,7 @@ class TaskAdapter(
             )
         }
 
-        // Перечеркивание
+        // Перечеркивание текста
         if (isChecked) {
             holder.textTask.paintFlags = holder.textTask.paintFlags or Paint.STRIKE_THRU_TEXT_FLAG
             holder.textTask.alpha = 0.6f
@@ -66,21 +62,45 @@ class TaskAdapter(
         holder.checkTask.setOnCheckedChangeListener(null)
         holder.checkTask.isChecked = isChecked
         holder.checkTask.setOnCheckedChangeListener { _, isCheckedNow ->
-            checkedStates[position] = isCheckedNow
-            onTaskCheckedChange(position, isCheckedNow)
-            notifyItemChanged(position)
+
+            // Обновление локального состояния
+            completedTasks = if (isCheckedNow) {
+                completedTasks + task
+            } else {
+                completedTasks - task
+            }
+
+            // Уведомление ViewModel
+            onTaskCheckedChange(task, isCheckedNow)
+
+            // Обновление перечеркивания
+            if (isCheckedNow) {
+                holder.textTask.paintFlags = holder.textTask.paintFlags or Paint.STRIKE_THRU_TEXT_FLAG
+                holder.textTask.alpha = 0.6f
+            } else {
+                holder.textTask.paintFlags = holder.textTask.paintFlags and Paint.STRIKE_THRU_TEXT_FLAG.inv()
+                holder.textTask.alpha = 1.0f
+            }
         }
 
-        // Обработка клика на карточку
+        // Клик по карточке
         holder.itemView.setOnClickListener {
             onItemClick(position)
+        }
+
+        // Долгое нажатие
+        holder.itemView.setOnLongClickListener {
+            onItemLongClick(position)
+            true
         }
     }
 
     override fun getItemCount(): Int = tasks.size
 
-    fun updateTask(position: Int, newText: String) {
-        tasks[position] = newText
-        notifyItemChanged(position)
+    // Обновление данных адаптера
+    fun updateData(newTasks: List<String>, newCompletedTasks: Set<String>) {
+        tasks = newTasks
+        completedTasks = newCompletedTasks.toMutableSet()
+        notifyDataSetChanged()
     }
 }
