@@ -9,16 +9,17 @@ import android.widget.TextView
 import androidx.cardview.widget.CardView
 import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.RecyclerView
+import com.example.todoapp.database.TaskEntity
 
 class TaskAdapter(
-    private var tasks: List<String>,
-    private val onItemClick: (Int) -> Unit,
-    private val onItemLongClick: (Int) -> Unit,
-    private val onTaskCheckedChange: (String, Boolean) -> Unit
+    var tasks: List<TaskEntity>,
+    private val onItemClick: (TaskEntity) -> Unit,
+    private val onItemLongClick: (TaskEntity) -> Unit,
+    private val onCheckChange: (TaskEntity, Boolean) -> Unit
 ) : RecyclerView.Adapter<TaskAdapter.TaskViewHolder>() {
 
     // Состояние чекбоксов
-    private var completedTasks = emptySet<String>()
+    private var completedTasks = emptySet<Long>()  // ID выполненных задач
 
     class TaskViewHolder(itemView: View) : RecyclerView.ViewHolder(itemView) {
         val cardView: CardView = itemView.findViewById(R.id.cardView)
@@ -34,9 +35,9 @@ class TaskAdapter(
 
     override fun onBindViewHolder(holder: TaskViewHolder, position: Int) {
         val task = tasks[position]
-        val isChecked = task in completedTasks
+        val isChecked = task.isCompleted || task.id in completedTasks
 
-        holder.textTask.text = task
+        holder.textTask.text = task.title
 
         // Цвет карточки по четности
         if (position % 2 == 0) {
@@ -63,15 +64,15 @@ class TaskAdapter(
         holder.checkTask.isChecked = isChecked
         holder.checkTask.setOnCheckedChangeListener { _, isCheckedNow ->
 
-            // Обновление локального состояния
-            completedTasks = if (isCheckedNow) {
-                completedTasks + task
+            // Обновление состояния
+            if (isCheckedNow) {
+                completedTasks = completedTasks + task.id
             } else {
-                completedTasks - task
+                completedTasks = completedTasks - task.id
             }
 
             // Уведомление ViewModel
-            onTaskCheckedChange(task, isCheckedNow)
+            onCheckChange(task, isCheckedNow)
 
             // Обновление перечеркивания
             if (isCheckedNow) {
@@ -85,12 +86,12 @@ class TaskAdapter(
 
         // Клик по карточке
         holder.itemView.setOnClickListener {
-            onItemClick(position)
+            onItemClick(task)
         }
 
         // Долгое нажатие
         holder.itemView.setOnLongClickListener {
-            onItemLongClick(position)
+            onItemLongClick(task)
             true
         }
     }
@@ -98,9 +99,13 @@ class TaskAdapter(
     override fun getItemCount(): Int = tasks.size
 
     // Обновление данных адаптера
-    fun updateData(newTasks: List<String>, newCompletedTasks: Set<String>) {
+    fun updateData(newTasks: List<TaskEntity>) {
         tasks = newTasks
-        completedTasks = newCompletedTasks.toMutableSet()
+
+        // Обновление состояния (удаление ID которых больше нет в списке)
+        val existingIds = tasks.map { it.id }.toSet()
+        completedTasks = completedTasks.filter { it in existingIds }.toSet()
+
         notifyDataSetChanged()
     }
 }

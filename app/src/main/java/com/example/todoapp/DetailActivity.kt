@@ -8,6 +8,8 @@ import android.widget.EditText
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import com.example.todoapp.database.AppDatabase
+import kotlinx.coroutines.runBlocking
 
 class DetailActivity : AppCompatActivity() {
 
@@ -15,8 +17,8 @@ class DetailActivity : AppCompatActivity() {
     private lateinit var buttonSave: Button
     private lateinit var buttonBack: Button
 
-    private var taskPosition: Int = -1
-    private var taskNumber: Int = 0
+    private var taskId: Long = -1
+    private var taskText: String = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -28,13 +30,10 @@ class DetailActivity : AppCompatActivity() {
         buttonBack = findViewById(R.id.buttonBack)
 
         // Получение данных
-        val taskText = intent.getStringExtra("task_text") ?: "Нет данных"
-        taskPosition = intent.getIntExtra("task_position", -1)
-        taskNumber = intent.getIntExtra("task_number", 0)
+        taskId = intent.getLongExtra("task_id", -1)
+        taskText = intent.getStringExtra("task_text") ?: "Нет данных"
 
-        // Заголовок
-        textTitle.text = "Задача №$taskNumber"
-
+        textTitle.text = "Редактирование задачи"
         editTextTask.setText(taskText)
         editTextTask.setSelection(taskText.length)
 
@@ -42,8 +41,8 @@ class DetailActivity : AppCompatActivity() {
             val newText = editTextTask.text.toString().trim()
             if (newText.isNotEmpty()) {
                 val resultIntent = Intent()
+                resultIntent.putExtra("task_id", taskId)
                 resultIntent.putExtra("edited_text", newText)
-                resultIntent.putExtra("task_position", taskPosition)
                 setResult(Activity.RESULT_OK, resultIntent)
                 finish()
             } else {

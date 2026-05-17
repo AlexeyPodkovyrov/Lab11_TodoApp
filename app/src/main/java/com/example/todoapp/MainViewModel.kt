@@ -1,114 +1,103 @@
 package com.example.todoapp
 
 import androidx.lifecycle.ViewModel
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
+import androidx.lifecycle.viewModelScope
+import com.example.todoapp.database.AppDatabase
+import com.example.todoapp.database.TaskEntity
+import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.launch
 
-class MainViewModel : ViewModel() {
+class MainViewModel(
+    private val database: AppDatabase
+) : ViewModel() {
 
-    // Счетчик
+    private val taskDao = database.taskDao()
+
+    // Счётчик
     private val _counter = MutableStateFlow(0)
     val counter: StateFlow<Int> = _counter.asStateFlow()
 
-    // Введенный текст
+    // Введённый текст
     private val _enteredText = MutableStateFlow("")
     val enteredText: StateFlow<String> = _enteredText.asStateFlow()
 
-    // Список задач
-    private val _tasks = MutableStateFlow<List<String>>(emptyList())
-    val tasks: StateFlow<List<String>> = _tasks.asStateFlow()
+    // Текст поиска
+    private val _searchQuery = MutableStateFlow("")
 
-    // Выполненные задачи
-    private val _completedTasks = MutableStateFlow<Set<String>>(emptySet())
-    val completedTasks: StateFlow<Set<String>> = _completedTasks.asStateFlow()
-
-    // Добавление задачи
-    fun addTask(task: String) {
-        val currentList = _tasks.value.toMutableList()
-        currentList.add(task)
-        _tasks.value = currentList
-    }
-
-    // Обновление задачи
-    fun updateTask(index: Int, newText: String) {
-        val currentList = _tasks.value.toMutableList()
-        if (index in currentList.indices) {
-            val oldText = currentList[index]
-            currentList[index] = newText
-            _tasks.value = currentList
-
-            // Обновление текста в выполненных задачах
-            if (oldText in _completedTasks.value) {
-                _completedTasks.value = (_completedTasks.value - oldText) + newText
-            }
-        }
-    }
-
-    // Удаление задачи по индексу и возвращение с состоянием до удаления
-    fun deleteTask(index: Int): Pair<String, Boolean> {
-        val currentList = _tasks.value.toMutableList()
-        if (index in currentList.indices) {
-            val deletedTask = currentList[index]
-            val wasCompleted = deletedTask in _completedTasks.value  // запоминание состояния задачи
-            currentList.removeAt(index)
-            _tasks.value = currentList
-
-            // Если была выполнена, удаляется
-            if (wasCompleted) {
-                _completedTasks.value -= deletedTask
-            }
-            return Pair(deletedTask, wasCompleted)  // возвращение задачи и её состояния
-        }
-        return Pair("", false)
-    }
-
-    // Восстановление удаленной задачи с сохранением состояния
-    fun restoreTask(index: Int, task: String, wasCompleted: Boolean) {
-        val currentList = _tasks.value.toMutableList()
-        if (index <= currentList.size) {
-            currentList.add(index, task)
-            _tasks.value = currentList
-
-            // Восстановление состояния чекбокса
-            if (wasCompleted) {
-                _completedTasks.value += task
-            }
-        }
-    }
-
-    // Чекбокс задачи
-    fun toggleTaskCompletion(task: String, isCompleted: Boolean) {
-        if (isCompleted) {
-            _completedTasks.value += task
+    // Результат поиска (если запрос пустой - все задачи, иначе поиск по запросу)
+    val tasks: StateFlow<List<TaskEntity>> = _searchQuery.flatMapLatest { query ->
+        if (query.isBlank()) {
+            taskDao.getAllTasks()
         } else {
-            _completedTasks.value -= task
+            taskDao.searchTasks(query)
+        }
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = emptyList()
+    )
+
+    fun updateSearchQuery(query: String) {
+        _searchQuery.value = query
+    }
+
+    fun addTask(title: String) {
+        viewModelScope.launch {
+            val task = TaskEntity(title = title)
+            taskDao.insertTask(task)
         }
     }
 
-    // Загрузка тестовых данных
+    fun deleteTask(task: TaskEntity): TaskEntity {
+        viewModelScope.launch {
+            taskDao.deleteTask(task)
+        }
+        return task
+    }
+
+    fun restoreTask(task: TaskEntity) {
+        viewModelScope.launch {
+            taskDao.insertTask(task)
+        }
+    }
+
+    fun updateTask(task: TaskEntity) {
+        viewModelScope.launch {
+            taskDao.updateTask(task)
+        }
+    }
+
+    fun toggleTaskCompletion(task: TaskEntity, isCompleted: Boolean) {
+        viewModelScope.launch {
+            val updatedTask = task.copy(isCompleted = isCompleted)
+            taskDao.updateTask(updatedTask)
+        }
+    }
+
     fun loadTestData() {
-        if (_tasks.value.isEmpty()) {
-            _tasks.value = listOf(
-                "Выполнить ЛР8",
-                "Сделать отчет по работе",
-                "Подключиться на пару",
-                "Сдать работу"
-            )
+        viewModelScope.launch {
+            val currentTasks = taskDao.getAllTasks().first()
+            if (currentTasks.isEmpty()) {
+                val testTasks = listOf(
+                    TaskEntity(title = "Выполнить ЛР 10"),
+                    TaskEntity(title = "Сделать отчет по работе"),
+                    TaskEntity(title = "Подключиться на пару"),
+                    TaskEntity(title = "Сдать работу"),
+                    TaskEntity(title = "Приступить к следующей")
+                )
+                testTasks.forEach { taskDao.insertTask(it) }
+            }
         }
     }
 
-    // Счетчик
     fun incrementCounter() {
         _counter.value += 1
     }
 
-    // Сброс счетчика
     fun resetCounter() {
         _counter.value = 0
     }
 
-    // Введенный текст
     fun updateEnteredText(text: String) {
         _enteredText.value = text
     }

@@ -15,8 +15,8 @@
 <br><br><br>
 
 <p align="center">
-  Лабораторная работа №8<br>
-  «Перенос логики списка задач из Activity в ViewModel. Использование StateFlow для хранения состояния».<br>
+  Лабораторная работа №10<br>
+  «Интеграция Room в проект. Сохранение списка задач в БД».<br>
   01.03.02 Прикладная математика и информатика
 </p>
 
@@ -38,133 +38,218 @@
 
 ## Цель работы
 
-Изучить архитектурный компонент ViewModel, научиться выносить логику и состояние UI из Activity, использовать StateFlow для реактивного обновления данных, обеспечить сохранение состояния при изменении конфигурации.
+Изучить основы работы с Room Database — официальной библиотекой для работы с SQLite в Android. Научиться создавать Entity, DAO, Database, интегрировать Room с ViewModel и корутинами, обеспечить сохранение списка задач между сессиями приложения.
+
 
 ---
 
-## Листинг класса `MainViewModel.kt`
+## Листинг класса данных `TaskEntity.kt`
 
 ```kotlin
-package com.example.todoapp
+package com.example.todoapp.database
 
-import androidx.lifecycle.ViewModel
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
+import androidx.room.Entity
+import androidx.room.PrimaryKey
 
-class MainViewModel : ViewModel() {
+@Entity(tableName = "tasks") // Имя таблицы в БД
+data class TaskEntity(
+    @PrimaryKey(autoGenerate = true) // Автоматическая генерация ID
+    val id: Long = 0,
+    val title: String,          // Текст задачи
+    val isCompleted: Boolean = false, // Статус выполнения
+    val createdTime: Long = System.currentTimeMillis() // Время создания для сортировки
+)
+```
 
-    // Счетчик
-    private val _counter = MutableStateFlow(0)
-    val counter: StateFlow<Int> = _counter.asStateFlow()
+---
 
-    // Введенный текст
-    private val _enteredText = MutableStateFlow("")
-    val enteredText: StateFlow<String> = _enteredText.asStateFlow()
+## Листинг интерфейса `TaskDao.kt`
 
-    // Список задач
-    private val _tasks = MutableStateFlow<List<String>>(emptyList())
-    val tasks: StateFlow<List<String>> = _tasks.asStateFlow()
+```kotlin
+package com.example.todoapp.database
 
-    // Выполненные задачи
-    private val _completedTasks = MutableStateFlow<Set<String>>(emptySet())
-    val completedTasks: StateFlow<Set<String>> = _completedTasks.asStateFlow()
+import androidx.room.*
+import kotlinx.coroutines.flow.Flow
 
-    // Добавление задачи
-    fun addTask(task: String) {
-        val currentList = _tasks.value.toMutableList()
-        currentList.add(task)
-        _tasks.value = currentList
-    }
+@Dao
+interface TaskDao {
 
-    // Обновление задачи
-    fun updateTask(index: Int, newText: String) {
-        val currentList = _tasks.value.toMutableList()
-        if (index in currentList.indices) {
-            val oldText = currentList[index]
-            currentList[index] = newText
-            _tasks.value = currentList
+    // Все задачи с сортировкой
+    @Query("SELECT * FROM tasks ORDER BY isCompleted ASC, createdTime DESC")
+    fun getAllTasks(): Flow<List<TaskEntity>>
 
-            // Обновление текста в выполненных задачах
-            if (oldText in _completedTasks.value) {
-                _completedTasks.value = (_completedTasks.value - oldText) + newText
+    // Поиск задачи по названию
+    @Query("SELECT * FROM tasks WHERE title LIKE '%' || :query || '%' ORDER BY isCompleted ASC, createdTime DESC")
+    fun searchTasks(query: String): Flow<List<TaskEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertTask(task: TaskEntity)
+
+    @Update
+    suspend fun updateTask(task: TaskEntity)
+
+    @Delete
+    suspend fun deleteTask(task: TaskEntity)
+
+    @Query("DELETE FROM tasks")
+    suspend fun deleteAll()
+
+}
+```
+
+---
+
+## Листинг абстрактного класса `AppDatabase.kt`
+
+```kotlin
+package com.example.todoapp.database
+
+import android.content.Context
+import androidx.room.Database
+import androidx.room.Room
+import androidx.room.RoomDatabase
+
+@Database(
+    entities = [TaskEntity::class],
+    version = 1,
+    exportSchema = false
+)
+abstract class AppDatabase : RoomDatabase() {
+    abstract fun taskDao(): TaskDao
+
+    companion object {
+        @Volatile
+        private var INSTANCE: AppDatabase? = null
+
+        fun getInstance(context: Context): AppDatabase {
+            return INSTANCE ?: synchronized(this) {
+                val instance = Room.databaseBuilder(
+                    context.applicationContext,
+                    AppDatabase::class.java,
+                    "todo_database"
+                )
+                    //.fallbackToDestructiveMigration() // Для разработки: при изменении версии БД пересоздавать таблицы
+                    .build()
+                INSTANCE = instance
+                instance
             }
         }
-    }
-
-    // Удаление задачи по индексу и возвращение с состоянием до удаления
-    fun deleteTask(index: Int): Pair<String, Boolean> {
-        val currentList = _tasks.value.toMutableList()
-        if (index in currentList.indices) {
-            val deletedTask = currentList[index]
-            val wasCompleted = deletedTask in _completedTasks.value  // запоминание состояния задачи
-            currentList.removeAt(index)
-            _tasks.value = currentList
-
-            // Если была выполнена, удаляется
-            if (wasCompleted) {
-                _completedTasks.value -= deletedTask
-            }
-            return Pair(deletedTask, wasCompleted)  // возвращение задачи и её состояния
-        }
-        return Pair("", false)
-    }
-
-    // Восстановление удаленной задачи с сохранением состояния
-    fun restoreTask(index: Int, task: String, wasCompleted: Boolean) {
-        val currentList = _tasks.value.toMutableList()
-        if (index <= currentList.size) {
-            currentList.add(index, task)
-            _tasks.value = currentList
-
-            // Восстановление состояния чекбокса
-            if (wasCompleted) {
-                _completedTasks.value += task
-            }
-        }
-    }
-
-    // Чекбокс задачи
-    fun toggleTaskCompletion(task: String, isCompleted: Boolean) {
-        if (isCompleted) {
-            _completedTasks.value += task
-        } else {
-            _completedTasks.value -= task
-        }
-    }
-
-    // Загрузка тестовых данных
-    fun loadTestData() {
-        if (_tasks.value.isEmpty()) {
-            _tasks.value = listOf(
-                "Выполнить ЛР8",
-                "Сделать отчет по работе",
-                "Подключиться на пару",
-                "Сдать работу"
-            )
-        }
-    }
-
-    // Счетчик
-    fun incrementCounter() {
-        _counter.value += 1
-    }
-
-    // Сброс счетчика
-    fun resetCounter() {
-        _counter.value = 0
-    }
-
-    // Введенный текст
-    fun updateEnteredText(text: String) {
-        _enteredText.value = text
     }
 }
 ```
 
 ---
 
-## Листинг обновленного `MainActivity.kt`
+## Листинг обновленного файла `MainViewModel.kt`
+
+```kotlin
+package com.example.todoapp
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.example.todoapp.database.AppDatabase
+import com.example.todoapp.database.TaskEntity
+import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.launch
+
+class MainViewModel(
+    private val database: AppDatabase
+) : ViewModel() {
+
+    private val taskDao = database.taskDao()
+
+    // Счётчик
+    private val _counter = MutableStateFlow(0)
+    val counter: StateFlow<Int> = _counter.asStateFlow()
+
+    // Введённый текст
+    private val _enteredText = MutableStateFlow("")
+    val enteredText: StateFlow<String> = _enteredText.asStateFlow()
+
+    // Текст поиска
+    private val _searchQuery = MutableStateFlow("")
+
+    // Результат поиска (если запрос пустой - все задачи, иначе поиск по запросу)
+    val tasks: StateFlow<List<TaskEntity>> = _searchQuery.flatMapLatest { query ->
+        if (query.isBlank()) {
+            taskDao.getAllTasks()
+        } else {
+            taskDao.searchTasks(query)
+        }
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = emptyList()
+    )
+
+    fun updateSearchQuery(query: String) {
+        _searchQuery.value = query
+    }
+
+    fun addTask(title: String) {
+        viewModelScope.launch {
+            val task = TaskEntity(title = title)
+            taskDao.insertTask(task)
+        }
+    }
+
+    fun deleteTask(task: TaskEntity): TaskEntity {
+        viewModelScope.launch {
+            taskDao.deleteTask(task)
+        }
+        return task
+    }
+
+    fun restoreTask(task: TaskEntity) {
+        viewModelScope.launch {
+            taskDao.insertTask(task)
+        }
+    }
+
+    fun updateTask(task: TaskEntity) {
+        viewModelScope.launch {
+            taskDao.updateTask(task)
+        }
+    }
+
+    fun toggleTaskCompletion(task: TaskEntity, isCompleted: Boolean) {
+        viewModelScope.launch {
+            val updatedTask = task.copy(isCompleted = isCompleted)
+            taskDao.updateTask(updatedTask)
+        }
+    }
+
+    fun loadTestData() {
+        viewModelScope.launch {
+            val currentTasks = taskDao.getAllTasks().first()
+            if (currentTasks.isEmpty()) {
+                val testTasks = listOf(
+                    TaskEntity(title = "Выполнить ЛР 10"),
+                    TaskEntity(title = "Сделать отчет по работе"),
+                    TaskEntity(title = "Подключиться на пару"),
+                    TaskEntity(title = "Сдать работу"),
+                    TaskEntity(title = "Приступить к следующей")
+                )
+                testTasks.forEach { taskDao.insertTask(it) }
+            }
+        }
+    }
+
+    fun incrementCounter() {
+        _counter.value += 1
+    }
+
+    fun resetCounter() {
+        _counter.value = 0
+    }
+
+    fun updateEnteredText(text: String) {
+        _enteredText.value = text
+    }
+}
+```
+
+## Листинг обновленного файла `MainActivity.kt`
 
 ```kotlin
 package com.example.todoapp
@@ -185,28 +270,40 @@ import androidx.recyclerview.widget.ItemTouchHelper
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.snackbar.Snackbar
+import com.example.todoapp.database.AppDatabase
+import com.example.todoapp.database.TaskEntity
 import kotlinx.coroutines.launch
 
 class MainActivity : AppCompatActivity() {
 
-    private val viewModel: MainViewModel by viewModels()
+    // Получение БД
+    private val database by lazy { AppDatabase.getInstance(this) }
+
+    // Создание ViewModel с фабрикой
+    private val viewModel: MainViewModel by viewModels {
+        MainViewModelFactory(database)
+    }
 
     private lateinit var adapter: TaskAdapter
     private lateinit var recyclerView: RecyclerView
     private lateinit var textTaskCount: TextView
 
-    // Для получения результата из DetailActivity
+    // Получения результата редактирования задачи из DetailActivity
     private val editTaskLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         if (result.resultCode == RESULT_OK) {
             val data = result.data
             data?.let {
-                if (it.hasExtra("edited_text")) {
-                    val position = it.getIntExtra("task_position", -1)
+                if (it.hasExtra("edited_text") && it.hasExtra("task_id")) {
+                    val taskId = it.getLongExtra("task_id", -1)
                     val newText = it.getStringExtra("edited_text")
-                    if (position != -1 && newText != null) {
-                        viewModel.updateTask(position, newText)
+                    if (taskId != -1L && newText != null) {
+                        // Нахождение задачи по ID и обновление
+                        val task = viewModel.tasks.value.find { it.id == taskId }
+                        task?.let {
+                            viewModel.updateTask(it.copy(title = newText))
+                        }
                         Toast.makeText(this, "Задача обновлена", Toast.LENGTH_SHORT).show()
                     }
                 }
@@ -236,7 +333,7 @@ class MainActivity : AppCompatActivity() {
         // Настройка RecyclerView
         setupRecyclerView()
 
-        // Подписка на счетчик
+        // Подписка на счётчик
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 viewModel.counter.collect { count ->
@@ -245,7 +342,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Подписка на введенный текст
+        // Подписка на введённый текст
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 viewModel.enteredText.collect { text ->
@@ -258,23 +355,12 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Подписка на изменения списка задач
+        // Подписка на изменения списка задач из БД
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 viewModel.tasks.collect { tasks ->
-                    val completed = viewModel.completedTasks.value
-                    adapter.updateData(tasks, completed)
+                    adapter.updateData(tasks)
                     updateTaskCount(tasks.size)
-                }
-            }
-        }
-
-        // Подписка на изменения выполненных задач (чекбоксы)
-        lifecycleScope.launch {
-            repeatOnLifecycle(Lifecycle.State.STARTED) {
-                viewModel.completedTasks.collect { completed ->
-                    val tasks = viewModel.tasks.value
-                    adapter.updateData(tasks, completed)
                 }
             }
         }
@@ -301,7 +387,6 @@ class MainActivity : AppCompatActivity() {
             if (task.isNotBlank()) {
                 viewModel.addTask(task)
                 editTextTask.text.clear()
-                recyclerView.scrollToPosition(viewModel.tasks.value.size - 1)
                 Toast.makeText(this, "Задача добавлена", Toast.LENGTH_SHORT).show()
             } else {
                 Toast.makeText(this, R.string.toast_empty_task, Toast.LENGTH_SHORT).show()
@@ -312,18 +397,33 @@ class MainActivity : AppCompatActivity() {
         buttonDeleteLast.setOnClickListener {
             val currentTasks = viewModel.tasks.value
             if (currentTasks.isNotEmpty()) {
-                val lastIndex = currentTasks.size - 1
-                val (deletedTask, wasCompleted) = viewModel.deleteTask(lastIndex)
+                val lastTask = currentTasks.last()
+                viewModel.deleteTask(lastTask)
 
-                // Snackbar для отмены
                 Snackbar.make(recyclerView, "Задача удалена", Snackbar.LENGTH_LONG)
                     .setAction("Отмена") {
-                        viewModel.restoreTask(lastIndex, deletedTask, wasCompleted)
+                        viewModel.restoreTask(lastTask)
                     }
                     .show()
             } else {
                 Toast.makeText(this, "Список задач пуст", Toast.LENGTH_SHORT).show()
             }
+        }
+
+        // Поиск задач
+        val editTextSearch = findViewById<EditText>(R.id.editTextSearch)
+
+        editTextSearch.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: android.text.Editable?) {
+                viewModel.updateSearchQuery(s.toString())
+            }
+        })
+
+        editTextSearch.setOnLongClickListener {
+            editTextSearch.text.clear()
+            true
         }
     }
 
@@ -332,28 +432,24 @@ class MainActivity : AppCompatActivity() {
 
         adapter = TaskAdapter(
             tasks = emptyList(),
-            onItemClick = { position ->
-                val taskText = viewModel.tasks.value[position]
+            onItemClick = { task ->
                 val intent = Intent(this, DetailActivity::class.java)
-                intent.putExtra("task_text", taskText)
-                intent.putExtra("task_position", position)
-                intent.putExtra("task_number", position + 1)
+                intent.putExtra("task_id", task.id)
+                intent.putExtra("task_text", task.title)
+                intent.putExtra("task_number", viewModel.tasks.value.indexOf(task) + 1)
                 editTaskLauncher.launch(intent)
             },
-            onItemLongClick = { position ->
-
-                // Удаление и получение задачи и её состояния
-                val (deletedTask, wasCompleted) = viewModel.deleteTask(position)
+            onItemLongClick = { task ->
+                val deletedTask = task
+                viewModel.deleteTask(deletedTask)
 
                 Snackbar.make(recyclerView, "Задача удалена", Snackbar.LENGTH_LONG)
                     .setAction("Отмена") {
-
-                        // Восстановление с сохранением состояния
-                        viewModel.restoreTask(position, deletedTask, wasCompleted)
+                        viewModel.restoreTask(deletedTask)
                     }
                     .show()
             },
-            onTaskCheckedChange = { task, isChecked ->
+            onCheckChange = { task, isChecked ->
                 viewModel.toggleTaskCompletion(task, isChecked)
             }
         )
@@ -374,11 +470,12 @@ class MainActivity : AppCompatActivity() {
             override fun onSwiped(viewHolder: RecyclerView.ViewHolder, direction: Int) {
                 val position = viewHolder.adapterPosition
                 if (position != RecyclerView.NO_POSITION) {
-                    val (deletedTask, wasCompleted) = viewModel.deleteTask(position)
+                    val task = adapter.tasks[position]
+                    viewModel.deleteTask(task)
 
                     Snackbar.make(recyclerView, "Задача удалена", Snackbar.LENGTH_LONG)
                         .setAction("Отмена") {
-                            viewModel.restoreTask(position, deletedTask, wasCompleted)
+                            viewModel.restoreTask(task)
                         }
                         .show()
                 }
@@ -394,9 +491,7 @@ class MainActivity : AppCompatActivity() {
 }
 ```
 
----
-
-## Листинг обновленного `TaskAdapter.kt`
+## Листинг обновленного файла `TaskAdapter.kt`
 
 ```kotlin
 package com.example.todoapp
@@ -410,16 +505,17 @@ import android.widget.TextView
 import androidx.cardview.widget.CardView
 import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.RecyclerView
+import com.example.todoapp.database.TaskEntity
 
 class TaskAdapter(
-    private var tasks: List<String>,
-    private val onItemClick: (Int) -> Unit,
-    private val onItemLongClick: (Int) -> Unit,
-    private val onTaskCheckedChange: (String, Boolean) -> Unit
+    var tasks: List<TaskEntity>,
+    private val onItemClick: (TaskEntity) -> Unit,
+    private val onItemLongClick: (TaskEntity) -> Unit,
+    private val onCheckChange: (TaskEntity, Boolean) -> Unit
 ) : RecyclerView.Adapter<TaskAdapter.TaskViewHolder>() {
 
     // Состояние чекбоксов
-    private var completedTasks = emptySet<String>()
+    private var completedTasks = emptySet<Long>()  // ID выполненных задач
 
     class TaskViewHolder(itemView: View) : RecyclerView.ViewHolder(itemView) {
         val cardView: CardView = itemView.findViewById(R.id.cardView)
@@ -435,9 +531,9 @@ class TaskAdapter(
 
     override fun onBindViewHolder(holder: TaskViewHolder, position: Int) {
         val task = tasks[position]
-        val isChecked = task in completedTasks
+        val isChecked = task.isCompleted || task.id in completedTasks
 
-        holder.textTask.text = task
+        holder.textTask.text = task.title
 
         // Цвет карточки по четности
         if (position % 2 == 0) {
@@ -464,15 +560,15 @@ class TaskAdapter(
         holder.checkTask.isChecked = isChecked
         holder.checkTask.setOnCheckedChangeListener { _, isCheckedNow ->
 
-            // Обновление локального состояния
-            completedTasks = if (isCheckedNow) {
-                completedTasks + task
+            // Обновление состояния
+            if (isCheckedNow) {
+                completedTasks = completedTasks + task.id
             } else {
-                completedTasks - task
+                completedTasks = completedTasks - task.id
             }
 
             // Уведомление ViewModel
-            onTaskCheckedChange(task, isCheckedNow)
+            onCheckChange(task, isCheckedNow)
 
             // Обновление перечеркивания
             if (isCheckedNow) {
@@ -486,12 +582,12 @@ class TaskAdapter(
 
         // Клик по карточке
         holder.itemView.setOnClickListener {
-            onItemClick(position)
+            onItemClick(task)
         }
 
         // Долгое нажатие
         holder.itemView.setOnLongClickListener {
-            onItemLongClick(position)
+            onItemLongClick(task)
             true
         }
     }
@@ -499,225 +595,14 @@ class TaskAdapter(
     override fun getItemCount(): Int = tasks.size
 
     // Обновление данных адаптера
-    fun updateData(newTasks: List<String>, newCompletedTasks: Set<String>) {
+    fun updateData(newTasks: List<TaskEntity>) {
         tasks = newTasks
-        completedTasks = newCompletedTasks.toMutableSet()
+
+        // Обновление состояния (удаление ID которых больше нет в списке)
+        val existingIds = tasks.map { it.id }.toSet()
+        completedTasks = completedTasks.filter { it in existingIds }.toSet()
+
         notifyDataSetChanged()
-    }
-}
-```
-
----
-
-## Листинг `MainActivity.kt` с изменениями
-
-```kotlin
-package com.example.todoapp
-
-import android.app.Activity
-import android.content.Intent
-import android.os.Bundle
-import android.widget.Button
-import android.widget.EditText
-import android.widget.TextView
-import android.widget.Toast
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.appcompat.app.AppCompatActivity
-import androidx.recyclerview.widget.ItemTouchHelper
-import androidx.recyclerview.widget.LinearLayoutManager
-import androidx.recyclerview.widget.RecyclerView
-import com.google.android.material.snackbar.Snackbar
-
-class MainActivity : AppCompatActivity() {
-
-    private var counter = 0
-    private val tasks = mutableListOf<String>()
-    private var enteredText = ""
-
-    private lateinit var adapter: TaskAdapter
-    private lateinit var recyclerView: RecyclerView
-    private lateinit var textTaskCount: TextView
-
-    // Регистрация ActivityResultLauncher для получения результата из DetailActivity
-    private val editTaskLauncher = registerForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
-            val data = result.data
-            data?.let {
-                if (it.hasExtra("edited_text")) {
-                    //  Редактирование задачи
-                    val position = it.getIntExtra("task_position", -1)
-                    val newText = it.getStringExtra("edited_text")
-                    if (position != -1 && newText != null) {
-                        tasks[position] = newText
-                        adapter.updateTask(position, newText)
-                        updateTaskCount()
-                        Toast.makeText(this, "Задача обновлена", Toast.LENGTH_SHORT).show()
-                    }
-                }
-            }
-        }
-    }
-
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
-
-        // Блок 1: Счётчик
-        val textCounter = findViewById<TextView>(R.id.textCounter)
-        val buttonIncrement = findViewById<Button>(R.id.buttonIncrement)
-        val buttonResetCounter = findViewById<Button>(R.id.buttonResetCounter)
-
-        // Блок 2: Поле ввода
-        val editTextInput = findViewById<EditText>(R.id.editTextInput)
-        val buttonShow = findViewById<Button>(R.id.buttonShow)
-        val textEntered = findViewById<TextView>(R.id.textEntered)
-
-        // Блок 3: ToDo список
-        val editTextTask = findViewById<EditText>(R.id.editTextTask)
-        val buttonAddTask = findViewById<Button>(R.id.buttonAddTask)
-        val buttonDeleteLast = findViewById<Button>(R.id.buttonDeleteLast)
-        recyclerView = findViewById(R.id.recyclerViewTasks)
-        textTaskCount = findViewById(R.id.textTaskCount)
-
-        // Настройка RecyclerView
-        setupRecyclerView()
-
-        // Восстановление состояния
-        savedInstanceState?.let {
-            counter = it.getInt("counter", 0)
-            enteredText = it.getString("enteredText", "")
-            it.getStringArrayList("tasks")?.let { list ->
-                tasks.clear()
-                tasks.addAll(list)
-            }
-        }
-
-        // Обновление интерфейса
-        updateCounterDisplay(textCounter)
-
-        if (enteredText.isNotEmpty()) {
-            textEntered.text = "${getString(R.string.label_entered)} $enteredText"
-        }
-
-        updateTasksDisplay()
-
-        // Обработчики
-        buttonIncrement.setOnClickListener {
-            counter++
-            updateCounterDisplay(textCounter)
-        }
-
-        buttonResetCounter.setOnClickListener {
-            counter = 0
-            updateCounterDisplay(textCounter)
-        }
-
-        buttonShow.setOnClickListener {
-            val inputText = editTextInput.text.toString()
-            enteredText = inputText
-            textEntered.text = "${getString(R.string.label_entered)} $inputText"
-        }
-
-        buttonAddTask.setOnClickListener {
-            val task = editTextTask.text.toString().trim()
-            if (task.isNotBlank()) {
-                tasks.add(task)
-                adapter.notifyItemInserted(tasks.size - 1)
-                updateTaskCount()
-                editTextTask.text.clear()
-                recyclerView.scrollToPosition(tasks.size - 1)
-                Toast.makeText(this, "Задача добавлена", Toast.LENGTH_SHORT).show()
-            } else {
-                Toast.makeText(this, R.string.toast_empty_task, Toast.LENGTH_SHORT).show()
-            }
-        }
-
-        buttonDeleteLast.setOnClickListener {
-            if (tasks.isNotEmpty()) {
-                val lastIndex = tasks.size - 1
-                val deletedTask = tasks[lastIndex]
-                tasks.removeAt(lastIndex)
-                adapter.notifyItemRemoved(lastIndex)
-                updateTaskCount()
-                Toast.makeText(this, "Последняя задача удалена", Toast.LENGTH_SHORT).show()
-            } else {
-                Toast.makeText(this, "Список задач пуст", Toast.LENGTH_SHORT).show()
-            }
-        }
-    }
-
-    private fun setupRecyclerView() {
-        recyclerView.layoutManager = LinearLayoutManager(this)
-
-        adapter = TaskAdapter(
-            tasks = tasks,
-            onTaskCheckedChange = { position, isChecked ->
-                updateTaskCount()
-            },
-            onItemClick = { position ->
-                // Открытие DetailActivity для редактирования
-                val intent = Intent(this, DetailActivity::class.java)
-                intent.putExtra("task_text", tasks[position])
-                intent.putExtra("task_position", position)
-                editTaskLauncher.launch(intent)
-            }
-        )
-
-        recyclerView.adapter = adapter
-
-        // Удаление свайпом
-        val swipeHandler = object : ItemTouchHelper.SimpleCallback(
-            0,
-            ItemTouchHelper.LEFT or ItemTouchHelper.RIGHT
-        ) {
-            override fun onMove(
-                recyclerView: RecyclerView,
-                viewHolder: RecyclerView.ViewHolder,
-                target: RecyclerView.ViewHolder
-            ): Boolean = false
-
-            override fun onSwiped(viewHolder: RecyclerView.ViewHolder, direction: Int) {
-                val position = viewHolder.adapterPosition
-                if (position != RecyclerView.NO_POSITION) {
-                    val deletedTask = tasks[position]
-                    tasks.removeAt(position)
-                    adapter.notifyItemRemoved(position)
-                    updateTaskCount()
-
-                    Snackbar.make(recyclerView, "Задача удалена", Snackbar.LENGTH_LONG)
-                        .setAction("Отмена") {
-                            tasks.add(position, deletedTask)
-                            adapter.notifyItemInserted(position)
-                            updateTaskCount()
-                        }
-                        .show()
-                }
-            }
-        }
-
-        ItemTouchHelper(swipeHandler).attachToRecyclerView(recyclerView)
-    }
-
-    private fun updateCounterDisplay(textView: TextView) {
-        textView.text = getString(R.string.counter_text, counter)
-    }
-
-    private fun updateTasksDisplay() {
-        updateTaskCount()
-        adapter.notifyDataSetChanged()
-    }
-
-    private fun updateTaskCount() {
-        textTaskCount.text = getString(R.string.label_task_count, tasks.size)
-    }
-
-    override fun onSaveInstanceState(outState: Bundle) {
-        super.onSaveInstanceState(outState)
-        outState.putInt("counter", counter)
-        outState.putString("enteredText", enteredText)
-        outState.putStringArrayList("tasks", ArrayList(tasks))
     }
 }
 ```
@@ -726,166 +611,187 @@ class MainActivity : AppCompatActivity() {
 
 ## Скриншоты работающего приложения
 
-### Список задач до поворота
+### Изначальный список задач
 
-![Список задач до поворота](<Снимок экрана 2026-05-07 210838.png>)
+![Список задач до перезапуска](<Снимок экрана 2026-05-17 015211.png>)
 
+### БД tasks в Database Inspector
 
-### Список задач после поворота
+![База данных](<Снимок экрана 2026-05-17 020243.png>)
 
-![Список задач после поворота](<Снимок экрана 2026-05-07 211015.png>)
+### Сохраненный список задач после перезапуска
+
+![Список задач после перезапуска](<Снимок экрана 2026-05-17 015534.png>)
+
+### Индивидуальное задание 2 - поиск задач
+
+![Демонстрация поиска задачи](<Снимок экрана 2026-05-17 015632.png>)
 
 ---
 
 ## Ответы на контрольные вопросы
 
-**1. Для чего нужен `ViewModel`? Как он помогает при повороте экрана?**
+**1. Для чего нужна библиотека Room? Какие проблемы она решает по сравнению с прямым использованием SQLite?**
 
- `ViewModel` - это компонент архитектуры Android, который хранит данные, связанные с UI. Он способен переживать изменения конфигурации, например повороты экрана, что обеспечивает сохранность данных.
+Room - это библиотека-обёртка над SQLite, предоставляющая абстракцию уровня объектов для удобной и безопасной работы с базами данных в Android.
 
- При повороте экрана происходит следующее:
+Проблемы, которые решает Room:
 
-  * `Activity` пересоздается, но `ViewModel` остается в памяти. 
-  * Данные (счетчик, список задач, состояние чекбоксов) не теряются.
-  * После пересоздания `Activity` подписывается на тот же `ViewModel` и получает актуальные данные.
+|Проблема с прямым SQLite                                            |Решение Room                                                              |
+|--------------------------------------------------------------------|--------------------------------------------------------------------------|
+|Шаблонный код - ручное создание таблиц, курсоры, парсинг            |Аннотации - `@Entity`, `@Dao`, `@Query` генерируют код автоматически      |
+|Ошибки в SQL-запросах - обнаруживаются только при выполнении        |Валидация на этапе компиляции - неверный SQL вызывает ошибку сборки       |
+|Блокировка основного потока - нужно вручную управлять потоками      |Интеграция с корутинами - `suspend`-методы и `Flow` для асинхронности     |
+|Отсутствие типобезопасности - работа с `Cursor` и индексами столбцов|Маппинг на data class - данные автоматически преобразуются в объекты      |
+|Сложная миграция - ручное написание SQL-скриптов                    |Поддержка миграций - аннотации и версионирование упрощают обновление схемы|
 
-*Пример*:
-
-```kotlin
-private val viewModel: MainViewModel by viewModels()
-// При повороте ViewModel остается, данные сохраняются
-```
-
-<br>
-
-**2. Чем `StateFlow` отличается от `LiveData`? В каких случаях предпочтительнее использовать `StateFlow`?**
-
-|Характеристика          |LiveData                             |StateFlow                                           |
-|------------------------|-------------------------------------|----------------------------------------------------|
-|**Библиотека**          |`androidx.lifecycle`                 |`kotlinx.coroutines`                                |
-|**Язык**                |Java + Kotlin                        |Только Kotlin                                       |
-|**Начальное значение**  |Не требуется                         |Обязательно при создании                            |
-|**Жизненный цикл**      |Знает о Lifecycle                    |Нужен `repeatOnLifecycle`                           |
-|**Операторы преобразования**|Ограниченные (`map`, `switchMap`)|Все операторы Flow (`filter`, `debounce`, `combine`)|
-|**Корутины**            |Не поддерживает                      |Поддерживает                                        |
-
-`StateFlow` предпочтительнее использовать в следующих случаях:
-
-* Проект написан на Kotlin с использованием корутин.
-* Нужны сложные преобразования потока данных.
-* Требуется доступ к текущему значению через `.value`.
+Таким образом, Room уменьшает количество шаблонного кода, повышает надёжность и делает код более читаемым и тестируемым.
 
 <br>
 
-**3. Что такое `lifecycleScope` и `repeatOnLifecycle`? Зачем они нужны при подписке на `StateFlow`?**
+**2. Назовите три основных компонента Room и объясните их назначение**
 
-`lifecycleScope` - это CoroutineScope, привязанный к жизненному циклу Activity/Fragment. Корутины, запущенные в этом scope, автоматически отменяются при уничтожении компонента.
+Основными компонентами Room являются:
 
-*Пример:*
+|Компонент   |Назначение                            |Пример из проекта                                 |
+|------------|-------------------------------------|----------------------------------------------------|
+|**Entity**  |Представляет таблицу в БД. Каждый экземпляр класса - строка, каждое поле - столбец|`TaskEntity` с полями `id`, `title`, `isCompleted`, `createdTime`|
+|**DAO**     |Интерфейс с методами для доступа к данным. Room генерирует реализацию автоматически|`TaskDao` с методами `getAllTasks()`, `insertTask()`, `deleteTask()`|
+|**Database**|Точка доступа к БД. Абстрактный класс, наследующий `RoomDatabase`. Связывает `Entity` и `DAO`, управляет версионированием и созданием экземпляра БД|`AppDatabase` с методом `taskDao()`|
+
+Взаимодействие: Database -> DAO -> Entity.
+
+<br>
+
+**3. Почему методы DAO, изменяющие данные, объявляются как `suspend`?**
+
+ Операции с БД (вставка, обновление, удаление) являются блокирующими и могут выполняться длительное время. Если выполнять их в основном потоке (UI-потоке), приложение «зависнет».
+
+ *Пример без `suspend`*:
 
 ```kotlin
-lifecycleScope.launch {
-    // Эта корутина отменится, когда Activity будет уничтожена
-    viewModel.tasks.collect { ... }
+fun insertTask(task: TaskEntity) {
+    taskDao.insertTask(task) // Room запрещает операции в UI-потоке
 }
 ```
 
-`repeatOnLifecycle` - это функция, которая запускает блок кода только когда жизненный цикл находится в определенном состоянии (например, `STARTED`), и приостанавливает его, когда компонент уходит в фон.
+ Методы `suspend` выполняются асинхронно, не блокируя основной поток.
 
-*Пример:*
+*Пример с `suspend`*:
 
 ```kotlin
-lifecycleScope.launch {
-    repeatOnLifecycle(Lifecycle.State.STARTED) {
-        // Коллектируем данные, только когда экран виден пользователю
-        viewModel.tasks.collect { tasks ->
-            adapter.updateData(tasks)
-        }
-    }
+suspend fun insertTask(task: TaskEntity) {
+    taskDao.insertTask(task) // Выполняется в фоновом потоке
 }
 ```
-При подписке на `StateFlow` они необходимы для:
 
-* **Экономии ресурсов** - когда приложение в фоне, поток данных не собирается.
-* **Предотвращения утечек** - корутина автоматически приостанавливается/возобновляется.
+Принцип работы:
 
-Без `repeatOnLifecycle` сбор данных шел бы постоянно, даже когда `Activity` невидима.
+* `suspend`-функция может быть вызвана только из корутины или другой `suspend`-функции
+* Room автоматически выполняет запрос в фоновом потоке
+* После завершения результат возвращается в вызывающую корутину без блокировки UI
 
-<br>
-
-**4. Как обновить данные в `StateFlow`?**
-
-`StateFlow` сам по себе неизменяемый. Для обновления используется приватный `MutableStateFlow`, а наружу предоставляется `asStateFlow()`.
-
-*Пример*:
+*Пример вызова из ViewModel*:
 
 ```kotlin
-class MyViewModel : ViewModel() {
-    // Приватный изменяемый поток
-    private val _tasks = MutableStateFlow<List<String>>(emptyList())
-    
-    // Публичный неизменяемый поток для UI
-    val tasks: StateFlow<List<String>> = _tasks.asStateFlow()
-    
-    // Метод обновления данных
-    fun addTask(newTask: String) {
-        // Создание копии списка, модифицикация и присвоение нового значения
-        _tasks.value = _tasks.value.toMutableList().apply { add(newTask) }
+fun addTask(title: String) {
+    viewModelScope.launch { // Корутина на фоне
+        taskDao.insert(TaskEntity(title = title)) // Не блокирует UI
     }
 }
 ```
 
-**Ключевые особенности**:
+<br>
 
-* `MutableStateFlow` - `private`, доступен только внутри `ViewModel`.
-* `StateFlow` - public, доступен для подписки из UI.
-* Обновление через присваивание нового значения `_tasks.value = newList`.
-* Для `List` обязательно создавать копию (`toMutableList()`), так как Flow сравнивает ссылки.
+**4. Что такое `Flow` и почему его удобно использовать с Room?**
+
+`Flow` - это асинхронный поток данных из библиотеки Kotlin Coroutines, который выдаёт последовательность значений во времени и поддерживает реактивное программирование.
+
+`Flow` удобно использовать с Room по следующим причинам:
+
+* Реактивность - при изменении в БД Flow автоматически выдаёт новое значение
+* Автообновление - не нужно вручную перезапрашивать данные
+* Жизненный цикл - можно привязать к жизненному циклу через repeatOnLifecycle
+* Операторы - поддерживает map, filter, combine и другие
+
+*Пример из `TaskDao.kt`:*
+
+```kotlin
+// Достаточно подписаться один раз, UI будет обновляться автоматически
+@Query("SELECT * FROM tasks ORDER BY isCompleted ASC, createdTime DESC")
+fun getAllTasks(): Flow<List<TaskEntity>> 
+```
+
+При добавлении/удалении/обновлении задачи - Flow сам выдаст новый список, и адаптер обновится.
 
 <br>
 
-**5. Какие преимущества даёт вынос логики в `ViewModel` с точки зрения тестирования?**
+**5. Как Room обеспечивает проверку SQL-запросов на этапе компиляции?**
 
-С точки зрения тестирования, вынос логики в `ViewModel` дает следующие преимущества:
+Room использует аннотационный процессор `kapt` (Kotlin Annotation Processing Tool), который анализирует аннотации `@Query`, `@Insert` и другие во время компиляции.
 
-* **Изоляция от Android-зависимостей**:
+*Пример процесса проверки:*
 
-    ```kotlin
-    class MainViewModelTest {
-        private lateinit var viewModel: MainViewModel
+1. Написан запрос с опечаткой в имени таблицы: @Query("SELECT * FROM taskss")
+2. kapt анализирует аннотации и сравнивает с @Entity-классами
+3. Обнаруживается, что таблицы "taskss" не существует
+4. Генерируется ошибку компиляции: "Cannot find the table in the provided entities"
+5. Сборка останавливается и ошибка не попадёт в релиз
 
-        @Test
-        fun testAddTask() {
-            viewModel.addTask("Сделать ЛР8")
-            assertEquals(listOf("Сделать ЛР8"), viewModel.tasks.value)
-        }
+Таким образом, ошибки в именах таблиц, столбцов, типах данных обнаруживаются до запуска приложения. Без Room (чистый SQLite) такая ошибка проявилась бы только в рантайме, когда пользователь запустил приложение.
 
-        @Test
-        fun testDeleteTask() {
-            viewModel.addTask("Задача 1")
-            viewModel.deleteTask(0)
-            assertEquals(emptyList(), viewModel.tasks.value)
+<br>
+
+**6. Зачем нужен паттерн Singleton для экземпляра базы данных?**
+
+Singleton - это паттерн, гарантирующий, что во всём приложении существует только один экземпляр БД.
+
+Причины использования паттерна Singleton:
+
+* Создание экземпляра `RoomDatabase` - ресурсоёмкая операция (открытие файла БД, инициализация миграций, проверка схемы)
+* Одновременный доступ к БД из нескольких потоков без синхронизации может привести к повреждению данных
+
+Преимущества использования паттерна Singleton:
+
+* Экономия ресурсов - БД создаётся один раз на всё время жизни приложения
+* Потокобезопасность - 	предотвращает одновременный доступ из разных потоков
+* Целостность данных - исключает конфликты при параллельной записи
+
+*Пример реализации в `AppDatabase.kt`:*
+
+```kotlin
+companion object {
+    @Volatile
+    private var INSTANCE: AppDatabase? = null
+
+    fun getInstance(context: Context): AppDatabase {
+        return INSTANCE ?: synchronized(this) {
+            val instance = Room.databaseBuilder(...).build()
+            INSTANCE = instance
+            instance
         }
     }
-    ```
+}
+```
 
-* **Разделение ответственности** - UI занимается только отображением.
-* **Переиспользование** - одна `ViewModel` для разных экранов (планшет/телефон).
-* **Устойчивость** - данные не теряются при поворотах.
-* **Поддержка `StateFlow`** - реактивное обновление данных.
-
-`ViewModel` превращает логику в чистые функции, которые легко тестировать автоматически, без UI-тестов и эмулятора.
+* `@Volatile` - гарантирует, что все потоки видят актуальное значение INSTANCE
+* `INSTANCE ?:` - создается только если null
+* `synchronized` - потокобезопасность: только один поток может создать экземпляр, остальные ждут
 
 ---
 
 ## Вывод
 
-В ходе выполнения лабораторной работы №8 изучил архитектурный компонент `ViewModel` и реактивные потоки `StateFlow` для хранения состояния UI.
+В ходе выполнения лабораторной работы №10 изучил библиотеку Room для работы с базами данных SQLite, освоил создание `Entity`, `DAO` и `Database`, а также интеграцию Room с ViewModel и корутинами.
 
-Выполняя задание, создал класс `MainViewModel.kt`, где вынес хранение счетчика, введенного текста, списка задач и состояния чекбоксов с помощью `MutableStateFlow`. В файле `TaskAdapter.kt` добавил колбэк `onTaskCheckedChange` для передачи изменений в `ViewModel` и метод `updateData()` для обновления данных адаптера.
+Выполняя задание, создал класс `TaskEntity`, представляющий таблицу задач, интерфейс `TaskDao` с методами для работы с данными, и `AppDatabase` - синглтон для доступа к БД. В файле `MainViewModel.kt` заменил хранение списка задач в памяти на получение данных из Room через `Flow`, а методы работы с задачами теперь вызывают `DAO` внутри корутин. 
 
-В `MainActivity.kt` заменил прямое управление списком задач на использование `ViewModel` с помощью `by viewModels()`. Реализовал подписку на изменения `counter`, `enteredText`, `tasks` и `completedTasks` с помощью `lifecycleScope` и `repeatOnLifecycle`, благодаря чему данные сохраняются при повороте экрана.
+В адаптере `TaskAdapter.kt` обновил адаптер для работы с `TaskEntity`. В файле `MainActivity.kt` создал фабрику для передачи базы данных в ViewModel и обновил подписку на Flow.
 
-Помимо этого, реализовал хранение состояния чекбоксов в `ViewModel` с помощью `StateFlow<Set<String>>`. Исправил проблему восстановления состояния чекбокса при отмене удаления задачи: метод `deleteTask()` возвращает задачу и её состояние, а `restoreTask()` восстанавливает их вместе.
+Помимо этого, выполнил индивидуальное задание №2 - реализовал поиск задач по названию с автоматической фильтрацией списка при вводе текста. Также было реализовано индивидуальное задание №1 - сортировка задач: сначала невыполненные, затем выполненные, внутри каждой группы новые задачи сверху располагаются сверху.
 
-Результат работы **успешно** протестирован на эмуляторе.
+Узнал, что Room позволяет проверять SQL-запросы на этапе компиляции, автоматически конвертировать данные в объекты и легко работать с БД в асинхронном стиле через корутины.
+
+Улучшил архитектуру приложения с помощью Room - данные теперь сохраняются между сессиями, снижается нагрузка на память за счёт хранения только нужного в данный момент, упрощается тестирование благодаря изоляции БД, а реактивный подход с Flow обеспечивает автоматическое обновление UI при изменении данных.
+
+Результат работы **успешно** протестирован на эмуляторе - данные сохраняются после перезапуска приложения.

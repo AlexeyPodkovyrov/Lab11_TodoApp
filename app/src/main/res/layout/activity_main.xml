@@ -100,6 +100,19 @@
                 android:minWidth="120dp"/>
         </LinearLayout>
 
+        <!-- Поиск задачи -->
+        <EditText
+            android:id="@+id/editTextSearch"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="Поиск задачи"
+            android:inputType="text"
+            android:layout_marginTop="9dp"
+            android:layout_marginBottom="8dp"
+            android:drawableStart="@android:drawable/ic_menu_search"
+            android:paddingStart="2dp"
+            android:paddingEnd="12dp"/>
+
         <!-- Блок 4: Список задач -->
         <TextView
             android:id="@+id/textTaskCount"

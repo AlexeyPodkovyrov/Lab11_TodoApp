@@ -16,28 +16,40 @@ import androidx.recyclerview.widget.ItemTouchHelper
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.snackbar.Snackbar
+import com.example.todoapp.database.AppDatabase
+import com.example.todoapp.database.TaskEntity
 import kotlinx.coroutines.launch
 
 class MainActivity : AppCompatActivity() {
 
-    private val viewModel: MainViewModel by viewModels()
+    // Получение БД
+    private val database by lazy { AppDatabase.getInstance(this) }
+
+    // Создание ViewModel с фабрикой
+    private val viewModel: MainViewModel by viewModels {
+        MainViewModelFactory(database)
+    }
 
     private lateinit var adapter: TaskAdapter
     private lateinit var recyclerView: RecyclerView
     private lateinit var textTaskCount: TextView
 
-    // Для получения результата из DetailActivity
+    // Получения результата редактирования задачи из DetailActivity
     private val editTaskLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         if (result.resultCode == RESULT_OK) {
             val data = result.data
             data?.let {
-                if (it.hasExtra("edited_text")) {
-                    val position = it.getIntExtra("task_position", -1)
+                if (it.hasExtra("edited_text") && it.hasExtra("task_id")) {
+                    val taskId = it.getLongExtra("task_id", -1)
                     val newText = it.getStringExtra("edited_text")
-                    if (position != -1 && newText != null) {
-                        viewModel.updateTask(position, newText)
+                    if (taskId != -1L && newText != null) {
+                        // Нахождение задачи по ID и обновление
+                        val task = viewModel.tasks.value.find { it.id == taskId }
+                        task?.let {
+                            viewModel.updateTask(it.copy(title = newText))
+                        }
                         Toast.makeText(this, "Задача обновлена", Toast.LENGTH_SHORT).show()
                     }
                 }
@@ -67,7 +79,7 @@ class MainActivity : AppCompatActivity() {
         // Настройка RecyclerView
         setupRecyclerView()
 
-        // Подписка на счетчик
+        // Подписка на счётчик
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 viewModel.counter.collect { count ->
@@ -76,7 +88,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Подписка на введенный текст
+        // Подписка на введённый текст
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 viewModel.enteredText.collect { text ->
@@ -89,23 +101,12 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Подписка на изменения списка задач
+        // Подписка на изменения списка задач из БД
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 viewModel.tasks.collect { tasks ->
-                    val completed = viewModel.completedTasks.value
-                    adapter.updateData(tasks, completed)
+                    adapter.updateData(tasks)
                     updateTaskCount(tasks.size)
-                }
-            }
-        }
-
-        // Подписка на изменения выполненных задач (чекбоксы)
-        lifecycleScope.launch {
-            repeatOnLifecycle(Lifecycle.State.STARTED) {
-                viewModel.completedTasks.collect { completed ->
-                    val tasks = viewModel.tasks.value
-                    adapter.updateData(tasks, completed)
                 }
             }
         }
@@ -132,7 +133,6 @@ class MainActivity : AppCompatActivity() {
             if (task.isNotBlank()) {
                 viewModel.addTask(task)
                 editTextTask.text.clear()
-                recyclerView.scrollToPosition(viewModel.tasks.value.size - 1)
                 Toast.makeText(this, "Задача добавлена", Toast.LENGTH_SHORT).show()
             } else {
                 Toast.makeText(this, R.string.toast_empty_task, Toast.LENGTH_SHORT).show()
@@ -143,18 +143,33 @@ class MainActivity : AppCompatActivity() {
         buttonDeleteLast.setOnClickListener {
             val currentTasks = viewModel.tasks.value
             if (currentTasks.isNotEmpty()) {
-                val lastIndex = currentTasks.size - 1
-                val (deletedTask, wasCompleted) = viewModel.deleteTask(lastIndex)
+                val lastTask = currentTasks.last()
+                viewModel.deleteTask(lastTask)
 
-                // Snackbar для отмены
                 Snackbar.make(recyclerView, "Задача удалена", Snackbar.LENGTH_LONG)
                     .setAction("Отмена") {
-                        viewModel.restoreTask(lastIndex, deletedTask, wasCompleted)
+                        viewModel.restoreTask(lastTask)
                     }
                     .show()
             } else {
                 Toast.makeText(this, "Список задач пуст", Toast.LENGTH_SHORT).show()
             }
+        }
+
+        // Поиск задач
+        val editTextSearch = findViewById<EditText>(R.id.editTextSearch)
+
+        editTextSearch.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: android.text.Editable?) {
+                viewModel.updateSearchQuery(s.toString())
+            }
+        })
+
+        editTextSearch.setOnLongClickListener {
+            editTextSearch.text.clear()
+            true
         }
     }
 
@@ -163,28 +178,24 @@ class MainActivity : AppCompatActivity() {
 
         adapter = TaskAdapter(
             tasks = emptyList(),
-            onItemClick = { position ->
-                val taskText = viewModel.tasks.value[position]
+            onItemClick = { task ->
                 val intent = Intent(this, DetailActivity::class.java)
-                intent.putExtra("task_text", taskText)
-                intent.putExtra("task_position", position)
-                intent.putExtra("task_number", position + 1)
+                intent.putExtra("task_id", task.id)
+                intent.putExtra("task_text", task.title)
+                intent.putExtra("task_number", viewModel.tasks.value.indexOf(task) + 1)
                 editTaskLauncher.launch(intent)
             },
-            onItemLongClick = { position ->
-
-                // Удаление и получение задачи и её состояния
-                val (deletedTask, wasCompleted) = viewModel.deleteTask(position)
+            onItemLongClick = { task ->
+                val deletedTask = task
+                viewModel.deleteTask(deletedTask)
 
                 Snackbar.make(recyclerView, "Задача удалена", Snackbar.LENGTH_LONG)
                     .setAction("Отмена") {
-
-                        // Восстановление с сохранением состояния
-                        viewModel.restoreTask(position, deletedTask, wasCompleted)
+                        viewModel.restoreTask(deletedTask)
                     }
                     .show()
             },
-            onTaskCheckedChange = { task, isChecked ->
+            onCheckChange = { task, isChecked ->
                 viewModel.toggleTaskCompletion(task, isChecked)
             }
         )
@@ -205,11 +216,12 @@ class MainActivity : AppCompatActivity() {
             override fun onSwiped(viewHolder: RecyclerView.ViewHolder, direction: Int) {
                 val position = viewHolder.adapterPosition
                 if (position != RecyclerView.NO_POSITION) {
-                    val (deletedTask, wasCompleted) = viewModel.deleteTask(position)
+                    val task = adapter.tasks[position]
+                    viewModel.deleteTask(task)
 
                     Snackbar.make(recyclerView, "Задача удалена", Snackbar.LENGTH_LONG)
                         .setAction("Отмена") {
-                            viewModel.restoreTask(position, deletedTask, wasCompleted)
+                            viewModel.restoreTask(task)
                         }
                         .show()
                 }
