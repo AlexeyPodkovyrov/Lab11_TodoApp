@@ -2,16 +2,14 @@ package com.example.todoapp
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.todoapp.database.AppDatabase
+import com.example.todoapp.data.repository.TaskRepository
 import com.example.todoapp.database.TaskEntity
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 
 class MainViewModel(
-    private val database: AppDatabase
+    private val repository: TaskRepository
 ) : ViewModel() {
-
-    private val taskDao = database.taskDao()
 
     // Счётчик
     private val _counter = MutableStateFlow(0)
@@ -23,13 +21,14 @@ class MainViewModel(
 
     // Текст поиска
     private val _searchQuery = MutableStateFlow("")
+    val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
 
-    // Результат поиска (если запрос пустой - все задачи, иначе поиск по запросу)
+    // Получение задач через репозиторий
     val tasks: StateFlow<List<TaskEntity>> = _searchQuery.flatMapLatest { query ->
         if (query.isBlank()) {
-            taskDao.getAllTasks()
+            repository.getAllTasks()
         } else {
-            taskDao.searchTasks(query)
+            repository.searchTasks(query)
         }
     }.stateIn(
         scope = viewModelScope,
@@ -41,51 +40,53 @@ class MainViewModel(
         _searchQuery.value = query
     }
 
+    fun clearSearch() {
+        _searchQuery.value = ""
+    }
+
     fun addTask(title: String) {
         viewModelScope.launch {
-            val task = TaskEntity(title = title)
-            taskDao.insertTask(task)
+            repository.addTask(title)
         }
     }
 
     fun deleteTask(task: TaskEntity): TaskEntity {
         viewModelScope.launch {
-            taskDao.deleteTask(task)
+            repository.deleteTask(task)
         }
         return task
     }
 
     fun restoreTask(task: TaskEntity) {
         viewModelScope.launch {
-            taskDao.insertTask(task)
+            repository.restoreTask(task)
         }
     }
 
     fun updateTask(task: TaskEntity) {
         viewModelScope.launch {
-            taskDao.updateTask(task)
+            repository.updateTask(task)
         }
     }
 
     fun toggleTaskCompletion(task: TaskEntity, isCompleted: Boolean) {
         viewModelScope.launch {
-            val updatedTask = task.copy(isCompleted = isCompleted)
-            taskDao.updateTask(updatedTask)
+            repository.toggleTaskCompletion(task, isCompleted)
         }
     }
 
     fun loadTestData() {
         viewModelScope.launch {
-            val currentTasks = taskDao.getAllTasks().first()
+            val currentTasks = repository.getAllTasks().first()
             if (currentTasks.isEmpty()) {
                 val testTasks = listOf(
-                    TaskEntity(title = "Выполнить ЛР 10"),
-                    TaskEntity(title = "Сделать отчет по работе"),
-                    TaskEntity(title = "Подключиться на пару"),
-                    TaskEntity(title = "Сдать работу"),
-                    TaskEntity(title = "Приступить к следующей")
+                    "Приступить к следующей",
+                    "Сдать работу",
+                    "Подключиться на пару",
+                    "Сделать отчет по работе",
+                    "Выполнить ЛР 11"
                 )
-                testTasks.forEach { taskDao.insertTask(it) }
+                testTasks.forEach { repository.addTask(it) }
             }
         }
     }

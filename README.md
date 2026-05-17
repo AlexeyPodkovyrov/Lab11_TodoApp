@@ -15,8 +15,8 @@
 <br><br><br>
 
 <p align="center">
-  Лабораторная работа №10<br>
-  «Интеграция Room в проект. Сохранение списка задач в БД».<br>
+  Лабораторная работа №11<br>
+  «Рефакторинг: добавление слоя Repository между ViewModel и Room».<br>
   01.03.02 Прикладная математика и информатика
 </p>
 
@@ -38,100 +38,139 @@
 
 ## Цель работы
 
-Изучить основы работы с Room Database — официальной библиотекой для работы с SQLite в Android. Научиться создавать Entity, DAO, Database, интегрировать Room с ViewModel и корутинами, обеспечить сохранение списка задач между сессиями приложения.
-
-
----
-
-## Листинг класса данных `TaskEntity.kt`
-
-```kotlin
-package com.example.todoapp.database
-
-import androidx.room.Entity
-import androidx.room.PrimaryKey
-
-@Entity(tableName = "tasks") // Имя таблицы в БД
-data class TaskEntity(
-    @PrimaryKey(autoGenerate = true) // Автоматическая генерация ID
-    val id: Long = 0,
-    val title: String,          // Текст задачи
-    val isCompleted: Boolean = false, // Статус выполнения
-    val createdTime: Long = System.currentTimeMillis() // Время создания для сортировки
-)
-```
+Изучить архитектурный паттерн Repository, научиться выделять слой доступа к данным, отделяя его от бизнес-логики, выполнить рефакторинг существующего приложения для использования репозитория.
 
 ---
 
-## Листинг интерфейса `TaskDao.kt`
+## Листинг интерфейса `TaskRepository.kt`
 
 ```kotlin
-package com.example.todoapp.database
+package com.example.todoapp.data.repository
 
-import androidx.room.*
+import com.example.todoapp.database.TaskEntity
 import kotlinx.coroutines.flow.Flow
 
-@Dao
-interface TaskDao {
-
-    // Все задачи с сортировкой
-    @Query("SELECT * FROM tasks ORDER BY isCompleted ASC, createdTime DESC")
+interface TaskRepository {
     fun getAllTasks(): Flow<List<TaskEntity>>
-
-    // Поиск задачи по названию
-    @Query("SELECT * FROM tasks WHERE title LIKE '%' || :query || '%' ORDER BY isCompleted ASC, createdTime DESC")
-    fun searchTasks(query: String): Flow<List<TaskEntity>>
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertTask(task: TaskEntity)
-
-    @Update
-    suspend fun updateTask(task: TaskEntity)
-
-    @Delete
+    suspend fun addTask(title: String)
     suspend fun deleteTask(task: TaskEntity)
-
-    @Query("DELETE FROM tasks")
-    suspend fun deleteAll()
-
+    suspend fun updateTask(task: TaskEntity)
+    suspend fun toggleTaskCompletion(task: TaskEntity, isCompleted: Boolean)
+    suspend fun deleteAllTasks()
+    suspend fun restoreTask(task: TaskEntity)
+    suspend fun searchTasks(query: String): Flow<List<TaskEntity>>
 }
 ```
 
 ---
 
-## Листинг абстрактного класса `AppDatabase.kt`
+## Листинг класса `TaskRepositoryImpl.kt`
 
 ```kotlin
-package com.example.todoapp.database
+package com.example.todoapp.data.repository
 
-import android.content.Context
-import androidx.room.Database
-import androidx.room.Room
-import androidx.room.RoomDatabase
+import com.example.todoapp.database.TaskDao
+import com.example.todoapp.database.TaskEntity
+import kotlinx.coroutines.flow.Flow
 
-@Database(
-    entities = [TaskEntity::class],
-    version = 1,
-    exportSchema = false
-)
-abstract class AppDatabase : RoomDatabase() {
-    abstract fun taskDao(): TaskDao
+class TaskRepositoryImpl(
+    private val taskDao: TaskDao
+) : TaskRepository {
 
-    companion object {
-        @Volatile
-        private var INSTANCE: AppDatabase? = null
+    override fun getAllTasks(): Flow<List<TaskEntity>> = taskDao.getAllTasks()
 
-        fun getInstance(context: Context): AppDatabase {
-            return INSTANCE ?: synchronized(this) {
-                val instance = Room.databaseBuilder(
-                    context.applicationContext,
-                    AppDatabase::class.java,
-                    "todo_database"
-                )
-                    //.fallbackToDestructiveMigration() // Для разработки: при изменении версии БД пересоздавать таблицы
-                    .build()
-                INSTANCE = instance
-                instance
+    override suspend fun addTask(title: String) {
+        val task = TaskEntity(title = title)
+        taskDao.insertTask(task)
+    }
+
+    override suspend fun deleteTask(task: TaskEntity) {
+        taskDao.deleteTask(task)
+    }
+
+    override suspend fun updateTask(task: TaskEntity) {
+        taskDao.updateTask(task)
+    }
+
+    override suspend fun toggleTaskCompletion(task: TaskEntity, isCompleted: Boolean) {
+        val updatedTask = task.copy(isCompleted = isCompleted)
+        taskDao.updateTask(updatedTask)
+    }
+
+    override suspend fun deleteAllTasks() {
+        taskDao.deleteAll()
+    }
+
+    override suspend fun restoreTask(task: TaskEntity) {
+        taskDao.insertTask(task)  // вставляем задачу как есть (с сохранением состояния)
+    }
+
+    override suspend fun searchTasks(query: String): Flow<List<TaskEntity>> {
+        return taskDao.searchTasks(query)
+    }
+}
+```
+
+---
+
+## Листинг интерфейса `InMemoryTaskRepository.kt` (индивидуальное задание 1)
+
+```kotlin
+package com.example.todoapp.data.repository
+
+import com.example.todoapp.database.TaskEntity
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.map
+
+// Репозиторий хранит данные в памяти, не в БД
+class InMemoryTaskRepository : TaskRepository {
+
+    private val _tasks = MutableStateFlow<List<TaskEntity>>(emptyList())
+    private var nextId = 1L
+
+    override fun getAllTasks(): Flow<List<TaskEntity>> = _tasks.asStateFlow()
+
+    override suspend fun addTask(title: String) {
+        val newTask = TaskEntity(
+            id = nextId++,
+            title = title,
+            isCompleted = false,
+            createdTime = System.currentTimeMillis()
+        )
+        _tasks.value = _tasks.value + newTask
+    }
+
+    override suspend fun deleteTask(task: TaskEntity) {
+        _tasks.value = _tasks.value.filter { it.id != task.id }
+    }
+
+    override suspend fun updateTask(task: TaskEntity) {
+        _tasks.value = _tasks.value.map {
+            if (it.id == task.id) task else it
+        }
+    }
+
+    override suspend fun toggleTaskCompletion(task: TaskEntity, isCompleted: Boolean) {
+        updateTask(task.copy(isCompleted = isCompleted))
+    }
+
+    override suspend fun deleteAllTasks() {
+        _tasks.value = emptyList()
+    }
+
+    override suspend fun restoreTask(task: TaskEntity) {
+        _tasks.value = _tasks.value + task
+    }
+
+    override suspend fun searchTasks(query: String): Flow<List<TaskEntity>> {
+        return _tasks.asStateFlow().map { tasks ->
+            if (query.isBlank()) {
+                tasks
+            } else {
+                tasks.filter { it.title.contains(query, ignoreCase = true) }
             }
         }
     }
@@ -147,16 +186,14 @@ package com.example.todoapp
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.todoapp.database.AppDatabase
+import com.example.todoapp.data.repository.TaskRepository
 import com.example.todoapp.database.TaskEntity
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 
 class MainViewModel(
-    private val database: AppDatabase
+    private val repository: TaskRepository
 ) : ViewModel() {
-
-    private val taskDao = database.taskDao()
 
     // Счётчик
     private val _counter = MutableStateFlow(0)
@@ -168,13 +205,14 @@ class MainViewModel(
 
     // Текст поиска
     private val _searchQuery = MutableStateFlow("")
+    val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
 
-    // Результат поиска (если запрос пустой - все задачи, иначе поиск по запросу)
+    // Получаем задачи через репозиторий
     val tasks: StateFlow<List<TaskEntity>> = _searchQuery.flatMapLatest { query ->
         if (query.isBlank()) {
-            taskDao.getAllTasks()
+            repository.getAllTasks()
         } else {
-            taskDao.searchTasks(query)
+            repository.searchTasks(query)
         }
     }.stateIn(
         scope = viewModelScope,
@@ -186,51 +224,53 @@ class MainViewModel(
         _searchQuery.value = query
     }
 
+    fun clearSearch() {
+        _searchQuery.value = ""
+    }
+
     fun addTask(title: String) {
         viewModelScope.launch {
-            val task = TaskEntity(title = title)
-            taskDao.insertTask(task)
+            repository.addTask(title)
         }
     }
 
     fun deleteTask(task: TaskEntity): TaskEntity {
         viewModelScope.launch {
-            taskDao.deleteTask(task)
+            repository.deleteTask(task)
         }
         return task
     }
 
     fun restoreTask(task: TaskEntity) {
         viewModelScope.launch {
-            taskDao.insertTask(task)
+            repository.restoreTask(task)
         }
     }
 
     fun updateTask(task: TaskEntity) {
         viewModelScope.launch {
-            taskDao.updateTask(task)
+            repository.updateTask(task)
         }
     }
 
     fun toggleTaskCompletion(task: TaskEntity, isCompleted: Boolean) {
         viewModelScope.launch {
-            val updatedTask = task.copy(isCompleted = isCompleted)
-            taskDao.updateTask(updatedTask)
+            repository.toggleTaskCompletion(task, isCompleted)
         }
     }
 
     fun loadTestData() {
         viewModelScope.launch {
-            val currentTasks = taskDao.getAllTasks().first()
+            val currentTasks = repository.getAllTasks().first()
             if (currentTasks.isEmpty()) {
                 val testTasks = listOf(
-                    TaskEntity(title = "Выполнить ЛР 10"),
-                    TaskEntity(title = "Сделать отчет по работе"),
-                    TaskEntity(title = "Подключиться на пару"),
-                    TaskEntity(title = "Сдать работу"),
-                    TaskEntity(title = "Приступить к следующей")
+                    "Приступить к следующей",
+                    "Сдать работу",
+                    "Подключиться на пару",
+                    "Сделать отчет по работе",
+                    "Выполнить ЛР 11"
                 )
-                testTasks.forEach { taskDao.insertTask(it) }
+                testTasks.forEach { repository.addTask(it) }
             }
         }
     }
@@ -249,6 +289,32 @@ class MainViewModel(
 }
 ```
 
+---
+
+## Листинг обновленного файла `MainViewModelFactory.kt`
+
+```kotlin
+package com.example.todoapp
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import com.example.todoapp.data.repository.TaskRepository
+
+class MainViewModelFactory(
+    private val repository: TaskRepository
+) : ViewModelProvider.Factory {
+    override fun <T : ViewModel> create(modelClass: Class<T>): T {
+        if (modelClass.isAssignableFrom(MainViewModel::class.java)) {
+            @Suppress("UNCHECKED_CAST")
+            return MainViewModel(repository) as T
+        }
+        throw IllegalArgumentException("Unknown ViewModel class")
+    }
+}
+```
+
+---
+
 ## Листинг обновленного файла `MainActivity.kt`
 
 ```kotlin
@@ -256,6 +322,8 @@ package com.example.todoapp
 
 import android.content.Intent
 import android.os.Bundle
+import android.text.Editable
+import android.text.TextWatcher
 import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
@@ -269,26 +337,34 @@ import androidx.lifecycle.repeatOnLifecycle
 import androidx.recyclerview.widget.ItemTouchHelper
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import com.example.todoapp.data.repository.InMemoryTaskRepository
 import com.google.android.material.snackbar.Snackbar
+import com.example.todoapp.data.repository.TaskRepositoryImpl
 import com.example.todoapp.database.AppDatabase
-import com.example.todoapp.database.TaskEntity
 import kotlinx.coroutines.launch
+import kotlin.getValue
 
 class MainActivity : AppCompatActivity() {
 
-    // Получение БД
+    // База данных
     private val database by lazy { AppDatabase.getInstance(this) }
 
-    // Создание ViewModel с фабрикой
+    // Репозиторий в БД
+    private val repository by lazy { TaskRepositoryImpl(database.taskDao()) }
+
+    // Репозиторий в памяти
+    //private val repository by lazy { InMemoryTaskRepository() }
+
+    // ViewModel с фабрикой
     private val viewModel: MainViewModel by viewModels {
-        MainViewModelFactory(database)
+        MainViewModelFactory(repository)
     }
 
     private lateinit var adapter: TaskAdapter
     private lateinit var recyclerView: RecyclerView
     private lateinit var textTaskCount: TextView
 
-    // Получения результата редактирования задачи из DetailActivity
+    // Для получения результата из DetailActivity
     private val editTaskLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
@@ -299,7 +375,6 @@ class MainActivity : AppCompatActivity() {
                     val taskId = it.getLongExtra("task_id", -1)
                     val newText = it.getStringExtra("edited_text")
                     if (taskId != -1L && newText != null) {
-                        // Нахождение задачи по ID и обновление
                         val task = viewModel.tasks.value.find { it.id == taskId }
                         task?.let {
                             viewModel.updateTask(it.copy(title = newText))
@@ -315,7 +390,7 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        // Блок 1: Счётчик и другие элементы
+        // Блок 1: Счётчик
         val textCounter = findViewById<TextView>(R.id.textCounter)
         val buttonIncrement = findViewById<Button>(R.id.buttonIncrement)
         val buttonResetCounter = findViewById<Button>(R.id.buttonResetCounter)
@@ -330,7 +405,9 @@ class MainActivity : AppCompatActivity() {
         recyclerView = findViewById(R.id.recyclerViewTasks)
         textTaskCount = findViewById(R.id.textTaskCount)
 
-        // Настройка RecyclerView
+        // Поле поиска
+        val editTextSearch = findViewById<EditText>(R.id.editTextSearch)
+
         setupRecyclerView()
 
         // Подписка на счётчик
@@ -355,7 +432,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Подписка на изменения списка задач из БД
+        // Подписка на список задач
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 viewModel.tasks.collect { tasks ->
@@ -364,6 +441,15 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+
+        // Поиск
+        editTextSearch.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: Editable?) {
+                viewModel.updateSearchQuery(s.toString())
+            }
+        })
 
         // Загрузка тестовых данных
         viewModel.loadTestData()
@@ -399,7 +485,6 @@ class MainActivity : AppCompatActivity() {
             if (currentTasks.isNotEmpty()) {
                 val lastTask = currentTasks.last()
                 viewModel.deleteTask(lastTask)
-
                 Snackbar.make(recyclerView, "Задача удалена", Snackbar.LENGTH_LONG)
                     .setAction("Отмена") {
                         viewModel.restoreTask(lastTask)
@@ -410,19 +495,10 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Поиск задач
-        val editTextSearch = findViewById<EditText>(R.id.editTextSearch)
-
-        editTextSearch.addTextChangedListener(object : android.text.TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
-            override fun afterTextChanged(s: android.text.Editable?) {
-                viewModel.updateSearchQuery(s.toString())
-            }
-        })
-
+        // Очистка поиска по долгому нажатию
         editTextSearch.setOnLongClickListener {
             editTextSearch.text.clear()
+            viewModel.clearSearch()
             true
         }
     }
@@ -440,12 +516,10 @@ class MainActivity : AppCompatActivity() {
                 editTaskLauncher.launch(intent)
             },
             onItemLongClick = { task ->
-                val deletedTask = task
-                viewModel.deleteTask(deletedTask)
-
+                viewModel.deleteTask(task)
                 Snackbar.make(recyclerView, "Задача удалена", Snackbar.LENGTH_LONG)
                     .setAction("Отмена") {
-                        viewModel.restoreTask(deletedTask)
+                        viewModel.restoreTask(task)
                     }
                     .show()
             },
@@ -470,9 +544,8 @@ class MainActivity : AppCompatActivity() {
             override fun onSwiped(viewHolder: RecyclerView.ViewHolder, direction: Int) {
                 val position = viewHolder.adapterPosition
                 if (position != RecyclerView.NO_POSITION) {
-                    val task = adapter.tasks[position]
+                    val task = adapter.getTaskAtPosition(position)
                     viewModel.deleteTask(task)
-
                     Snackbar.make(recyclerView, "Задача удалена", Snackbar.LENGTH_LONG)
                         .setAction("Отмена") {
                             viewModel.restoreTask(task)
@@ -491,307 +564,186 @@ class MainActivity : AppCompatActivity() {
 }
 ```
 
-## Листинг обновленного файла `TaskAdapter.kt`
-
-```kotlin
-package com.example.todoapp
-
-import android.graphics.Paint
-import android.view.LayoutInflater
-import android.view.View
-import android.view.ViewGroup
-import android.widget.CheckBox
-import android.widget.TextView
-import androidx.cardview.widget.CardView
-import androidx.core.content.ContextCompat
-import androidx.recyclerview.widget.RecyclerView
-import com.example.todoapp.database.TaskEntity
-
-class TaskAdapter(
-    var tasks: List<TaskEntity>,
-    private val onItemClick: (TaskEntity) -> Unit,
-    private val onItemLongClick: (TaskEntity) -> Unit,
-    private val onCheckChange: (TaskEntity, Boolean) -> Unit
-) : RecyclerView.Adapter<TaskAdapter.TaskViewHolder>() {
-
-    // Состояние чекбоксов
-    private var completedTasks = emptySet<Long>()  // ID выполненных задач
-
-    class TaskViewHolder(itemView: View) : RecyclerView.ViewHolder(itemView) {
-        val cardView: CardView = itemView.findViewById(R.id.cardView)
-        val textTask: TextView = itemView.findViewById(R.id.textTask)
-        val checkTask: CheckBox = itemView.findViewById(R.id.checkTask)
-    }
-
-    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): TaskViewHolder {
-        val view = LayoutInflater.from(parent.context)
-            .inflate(R.layout.item_task, parent, false)
-        return TaskViewHolder(view)
-    }
-
-    override fun onBindViewHolder(holder: TaskViewHolder, position: Int) {
-        val task = tasks[position]
-        val isChecked = task.isCompleted || task.id in completedTasks
-
-        holder.textTask.text = task.title
-
-        // Цвет карточки по четности
-        if (position % 2 == 0) {
-            holder.cardView.setCardBackgroundColor(
-                ContextCompat.getColor(holder.itemView.context, android.R.color.white)
-            )
-        } else {
-            holder.cardView.setCardBackgroundColor(
-                ContextCompat.getColor(holder.itemView.context, R.color.light_gray)
-            )
-        }
-
-        // Перечеркивание текста
-        if (isChecked) {
-            holder.textTask.paintFlags = holder.textTask.paintFlags or Paint.STRIKE_THRU_TEXT_FLAG
-            holder.textTask.alpha = 0.6f
-        } else {
-            holder.textTask.paintFlags = holder.textTask.paintFlags and Paint.STRIKE_THRU_TEXT_FLAG.inv()
-            holder.textTask.alpha = 1.0f
-        }
-
-        // Чекбокс
-        holder.checkTask.setOnCheckedChangeListener(null)
-        holder.checkTask.isChecked = isChecked
-        holder.checkTask.setOnCheckedChangeListener { _, isCheckedNow ->
-
-            // Обновление состояния
-            if (isCheckedNow) {
-                completedTasks = completedTasks + task.id
-            } else {
-                completedTasks = completedTasks - task.id
-            }
-
-            // Уведомление ViewModel
-            onCheckChange(task, isCheckedNow)
-
-            // Обновление перечеркивания
-            if (isCheckedNow) {
-                holder.textTask.paintFlags = holder.textTask.paintFlags or Paint.STRIKE_THRU_TEXT_FLAG
-                holder.textTask.alpha = 0.6f
-            } else {
-                holder.textTask.paintFlags = holder.textTask.paintFlags and Paint.STRIKE_THRU_TEXT_FLAG.inv()
-                holder.textTask.alpha = 1.0f
-            }
-        }
-
-        // Клик по карточке
-        holder.itemView.setOnClickListener {
-            onItemClick(task)
-        }
-
-        // Долгое нажатие
-        holder.itemView.setOnLongClickListener {
-            onItemLongClick(task)
-            true
-        }
-    }
-
-    override fun getItemCount(): Int = tasks.size
-
-    // Обновление данных адаптера
-    fun updateData(newTasks: List<TaskEntity>) {
-        tasks = newTasks
-
-        // Обновление состояния (удаление ID которых больше нет в списке)
-        val existingIds = tasks.map { it.id }.toSet()
-        completedTasks = completedTasks.filter { it in existingIds }.toSet()
-
-        notifyDataSetChanged()
-    }
-}
-```
-
 ---
 
 ## Скриншоты работающего приложения
 
 ### Изначальный список задач
 
-![Список задач до перезапуска](<Снимок экрана 2026-05-17 015211.png>)
+![Список задач до перезапуска](<Снимок экрана 2026-05-17 230755.png>)
 
 ### БД tasks в Database Inspector
 
-![База данных](<Снимок экрана 2026-05-17 020243.png>)
+![База данных](<Снимок экрана 2026-05-17 230846.png>)
 
 ### Сохраненный список задач после перезапуска
 
-![Список задач после перезапуска](<Снимок экрана 2026-05-17 015534.png>)
+![Список задач после перезапуска](<Снимок экрана 2026-05-17 230955.png>)
 
-### Индивидуальное задание 2 - поиск задач
+### Индивидуальное задание 1 - репозиторий в памяти
 
-![Демонстрация поиска задачи](<Снимок экрана 2026-05-17 015632.png>)
+Необходимо в файле `MainActivity.kt` сменить репозиторий с БД на память:
+
+```kotlin
+// Репозиторий в БД
+//private val repository by lazy { TaskRepositoryImpl(database.taskDao()) }
+
+// Репозиторий в памяти
+private val repository by lazy { InMemoryTaskRepository() }
+```
+![Список задач хранится в памяти](<Снимок экрана 2026-05-17 231150.png>)
 
 ---
 
 ## Ответы на контрольные вопросы
 
-**1. Для чего нужна библиотека Room? Какие проблемы она решает по сравнению с прямым использованием SQLite?**
+**1. Какую роль выполняет слой Repository в архитектуре приложения?**
 
-Room - это библиотека-обёртка над SQLite, предоставляющая абстракцию уровня объектов для удобной и безопасной работы с базами данных в Android.
+Repository - это слой между источниками данных (БД, сеть, кэш) и бизнес-логикой (ViewModel). Его основная роль - абстрагировать способ получения и хранения данных от остального приложения.
 
-Проблемы, которые решает Room:
+В архитектуре приложения Repository выполняет следующую роль:
 
-|Проблема с прямым SQLite                                            |Решение Room                                                              |
-|--------------------------------------------------------------------|--------------------------------------------------------------------------|
-|Шаблонный код - ручное создание таблиц, курсоры, парсинг            |Аннотации - `@Entity`, `@Dao`, `@Query` генерируют код автоматически      |
-|Ошибки в SQL-запросах - обнаруживаются только при выполнении        |Валидация на этапе компиляции - неверный SQL вызывает ошибку сборки       |
-|Блокировка основного потока - нужно вручную управлять потоками      |Интеграция с корутинами - `suspend`-методы и `Flow` для асинхронности     |
-|Отсутствие типобезопасности - работа с `Cursor` и индексами столбцов|Маппинг на data class - данные автоматически преобразуются в объекты      |
-|Сложная миграция - ручное написание SQL-скриптов                    |Поддержка миграций - аннотации и версионирование упрощают обновление схемы|
+* ViewModel не знает, откуда берутся данные (Room, сеть, файлы)
 
-Таким образом, Room уменьшает количество шаблонного кода, повышает надёжность и делает код более читаемым и тестируемым.
+* При смене источника данных меняется только репозиторий, ViewModel остаётся без изменений
 
-<br>
+* Репозиторий - единое место для кэширования, синхронизации и обработки ошибок
 
-**2. Назовите три основных компонента Room и объясните их назначение**
-
-Основными компонентами Room являются:
-
-|Компонент   |Назначение                            |Пример из проекта                                 |
-|------------|-------------------------------------|----------------------------------------------------|
-|**Entity**  |Представляет таблицу в БД. Каждый экземпляр класса - строка, каждое поле - столбец|`TaskEntity` с полями `id`, `title`, `isCompleted`, `createdTime`|
-|**DAO**     |Интерфейс с методами для доступа к данным. Room генерирует реализацию автоматически|`TaskDao` с методами `getAllTasks()`, `insertTask()`, `deleteTask()`|
-|**Database**|Точка доступа к БД. Абстрактный класс, наследующий `RoomDatabase`. Связывает `Entity` и `DAO`, управляет версионированием и созданием экземпляра БД|`AppDatabase` с методом `taskDao()`|
-
-Взаимодействие: Database -> DAO -> Entity.
-
-<br>
-
-**3. Почему методы DAO, изменяющие данные, объявляются как `suspend`?**
-
- Операции с БД (вставка, обновление, удаление) являются блокирующими и могут выполняться длительное время. Если выполнять их в основном потоке (UI-потоке), приложение «зависнет».
-
- *Пример без `suspend`*:
+*Пример из файла `MainViewModel.kt`:*
 
 ```kotlin
-fun insertTask(task: TaskEntity) {
-    taskDao.insertTask(task) // Room запрещает операции в UI-потоке
-}
-```
-
- Методы `suspend` выполняются асинхронно, не блокируя основной поток.
-
-*Пример с `suspend`*:
-
-```kotlin
-suspend fun insertTask(task: TaskEntity) {
-    taskDao.insertTask(task) // Выполняется в фоновом потоке
-}
-```
-
-Принцип работы:
-
-* `suspend`-функция может быть вызвана только из корутины или другой `suspend`-функции
-* Room автоматически выполняет запрос в фоновом потоке
-* После завершения результат возвращается в вызывающую корутину без блокировки UI
-
-*Пример вызова из ViewModel*:
-
-```kotlin
-fun addTask(title: String) {
-    viewModelScope.launch { // Корутина на фоне
-        taskDao.insert(TaskEntity(title = title)) // Не блокирует UI
-    }
-}
-```
-
-<br>
-
-**4. Что такое `Flow` и почему его удобно использовать с Room?**
-
-`Flow` - это асинхронный поток данных из библиотеки Kotlin Coroutines, который выдаёт последовательность значений во времени и поддерживает реактивное программирование.
-
-`Flow` удобно использовать с Room по следующим причинам:
-
-* Реактивность - при изменении в БД Flow автоматически выдаёт новое значение
-* Автообновление - не нужно вручную перезапрашивать данные
-* Жизненный цикл - можно привязать к жизненному циклу через repeatOnLifecycle
-* Операторы - поддерживает map, filter, combine и другие
-
-*Пример из `TaskDao.kt`:*
-
-```kotlin
-// Достаточно подписаться один раз, UI будет обновляться автоматически
-@Query("SELECT * FROM tasks ORDER BY isCompleted ASC, createdTime DESC")
-fun getAllTasks(): Flow<List<TaskEntity>> 
-```
-
-При добавлении/удалении/обновлении задачи - Flow сам выдаст новый список, и адаптер обновится.
-
-<br>
-
-**5. Как Room обеспечивает проверку SQL-запросов на этапе компиляции?**
-
-Room использует аннотационный процессор `kapt` (Kotlin Annotation Processing Tool), который анализирует аннотации `@Query`, `@Insert` и другие во время компиляции.
-
-*Пример процесса проверки:*
-
-1. Написан запрос с опечаткой в имени таблицы: @Query("SELECT * FROM taskss")
-2. kapt анализирует аннотации и сравнивает с @Entity-классами
-3. Обнаруживается, что таблицы "taskss" не существует
-4. Генерируется ошибку компиляции: "Cannot find the table in the provided entities"
-5. Сборка останавливается и ошибка не попадёт в релиз
-
-Таким образом, ошибки в именах таблиц, столбцов, типах данных обнаруживаются до запуска приложения. Без Room (чистый SQLite) такая ошибка проявилась бы только в рантайме, когда пользователь запустил приложение.
-
-<br>
-
-**6. Зачем нужен паттерн Singleton для экземпляра базы данных?**
-
-Singleton - это паттерн, гарантирующий, что во всём приложении существует только один экземпляр БД.
-
-Причины использования паттерна Singleton:
-
-* Создание экземпляра `RoomDatabase` - ресурсоёмкая операция (открытие файла БД, инициализация миграций, проверка схемы)
-* Одновременный доступ к БД из нескольких потоков без синхронизации может привести к повреждению данных
-
-Преимущества использования паттерна Singleton:
-
-* Экономия ресурсов - БД создаётся один раз на всё время жизни приложения
-* Потокобезопасность - 	предотвращает одновременный доступ из разных потоков
-* Целостность данных - исключает конфликты при параллельной записи
-
-*Пример реализации в `AppDatabase.kt`:*
-
-```kotlin
-companion object {
-    @Volatile
-    private var INSTANCE: AppDatabase? = null
-
-    fun getInstance(context: Context): AppDatabase {
-        return INSTANCE ?: synchronized(this) {
-            val instance = Room.databaseBuilder(...).build()
-            INSTANCE = instance
-            instance
+// Получение задач через репозиторий
+    val tasks: StateFlow<List<TaskEntity>> = _searchQuery.flatMapLatest { query ->
+        if (query.isBlank()) {
+            repository.getAllTasks()
+        } else {
+            repository.searchTasks(query)
         }
     }
+```
+
+ViewModel вызывает `repository.getAllTasks()` и не знает, что данные приходят из Room через DAO.
+
+<br>
+
+**2. Какие преимущества даёт использование Repository по сравнению с прямым обращением к DAO из ViewModel?**
+
+Использование Repository по сравнению с прямым обращением к DAO из ViewModel дает следующие преимущества:
+
+|Критерий            |Без Repository (ViewModel -> DAO)                       |С Repository (ViewModel -> Repository -> DAO)                |
+|--------------------|--------------------------------------------------------|-------------------------------------------------------------|
+|**Зависимости**     |ViewModel зависит от конкретной реализации Room         |ViewModel зависит только от интерфейса репозитория           |
+|**Тестируемость**   |Сложно тестировать без запуска БД                       |Легко подменить репозиторий на mock-объект                   |
+|**Гибкость**        |Замена источника данных требует правки ViewModel        |Замена источника — только новая реализация репозитория       |
+|**Чистота кода**    |Бизнес-логика смешана с логикой доступа к данным        |Чёткое разделение: ViewModel - логика UI, Repository - данные|
+|**Масштабируемость**|Добавление нового источника - правки в нескольких местах|Новый источник - новый метод в репозитории                   |
+
+*Пример из проекта: репозиторий `InMemoryTaskRepository`. ViewModel работает с ним без изменений, хотя данные теперь хранятся в памяти, а не в БД.*
+
+<br>
+
+**3. Как изменится ViewModel, если мы захотим добавить ещё один источник данных (например, сетевое API)**
+
+**ViewModel не изменится**. Это главное преимущество Repository.
+
+Если требуется добавить ещё один источник данных, необходимо:
+
+1. Создать новый источник данных (например, TaskApi)
+
+2. Изменить реализацию репозитория, чтобы он объединял данные из БД и сети
+
+3. ViewModel остаётся без единого изменения, так как она зависит только от интерфейса `TaskRepository`
+
+*Пример реализации:*
+
+```kotlin
+class TaskRepositoryImpl(
+    private val taskDao: TaskDao,
+    private val taskApi: TaskApi
+) : TaskRepository {
+    override fun getAllTasks(): Flow<List<TaskEntity>> {
+        // Сначала берутся задачи из БД, потом обновляются из сети
+        // Затем объединяются два источника
+    }
+}
+```
+ViewModel остаётся такой же:
+
+```kotlin
+val tasks: StateFlow<List<TaskEntity>> = repository.getAllTasks() // без изменений
+```
+
+<br>
+
+**4. Почему методы репозитория объявлены как `suspend`?**
+
+Методы репозитория объявлены как `suspend`, потому что они выполняют долгие операции ввода-вывода (работа с БД, сетью, диском).
+
+Причины объявления методов таким образом:
+
+* Операции с БД или сетью могут занимать время
+
+* Нельзя блокировать основной (UI) поток - приложение зависнет
+
+* `suspend` позволяет вызывать методы из корутин, которые работают в фоновых потоках
+
+*Пример из репозитория `TaskRepositoryImpl` и класса `MainViewModel`:*
+
+```kotlin
+// В репозитории
+override suspend fun addTask(title: String) {
+        val task = TaskEntity(title = title) // не блокирует UI
+        taskDao.insertTask(task) 
+    }
+
+// В ViewModel
+fun addTask(title: String) {
+    viewModelScope.launch {  // корутина в фоне
+        repository.addTask(title)
+    }
 }
 ```
 
-* `@Volatile` - гарантирует, что все потоки видят актуальное значение INSTANCE
-* `INSTANCE ?:` - создается только если null
-* `synchronized` - потокобезопасность: только один поток может создать экземпляр, остальные ждут
+<br>
+
+**5. Что такое инверсия зависимостей и как она применяется в данном рефакторинге?**
+
+Инверсия зависимостей (Dependency Inversion Principle) — пятый принцип SOLID, который гласит:
+
+> Модули верхних уровней не должны зависеть от модулей нижних уровней. Оба должны зависеть от абстракций. Абстракции не должны зависеть от деталей. Детали должны зависеть от абстракций.
+
+То есть зависимости должны идти от конкретного к абстрактному, а не наоборот.
+
+В данном рефакторинге применяется в следующем виде:
+
+|До рефакторинга                                                           |После рефакторинга                                                  |
+|--------------------------------------------------------------------------|--------------------------------------------------------------------|
+|ViewModel -> Room (DAO)                                                   |ViewModel -> TaskRepository (интерфейс) <- TaskRepositoryImpl (Room)|
+|`MainViewModel` зависит от конкретной реализации `AppDatabase` / `TaskDao`|`MainViewModel` зависит от абстракции `TaskRepository`              |
+|Чтобы сменить БД, нужно менять ViewModel                                  |Чтобы сменить БД, достаточно создать новую реализацию               |
+
+*Пример из проекта:*
+
+* Абстракция - интерфейс `TaskRepository`
+
+* Деталь - класс `TaskRepositoryImpl` (работает с Room)
+
+* Другая деталь - класс `InMemoryTaskRepository` (хранит в памяти)
+
+Таким образом, ViewModel зависит от интерфейса `TaskRepository`, а не от конкретной реализации. Поэтому легко переключаться с `TaskRepositoryImpl` на `InMemoryTaskRepository`.Это и есть инверсия зависимостей.
 
 ---
 
 ## Вывод
 
-В ходе выполнения лабораторной работы №10 изучил библиотеку Room для работы с базами данных SQLite, освоил создание `Entity`, `DAO` и `Database`, а также интеграцию Room с ViewModel и корутинами.
+В ходе выполнения лабораторной работы №11 изучил архитектурный паттерн Repository, освоил выделение слоя доступа к данным и выполнил рефакторинг существующего приложения для использования репозитория.
 
-Выполняя задание, создал класс `TaskEntity`, представляющий таблицу задач, интерфейс `TaskDao` с методами для работы с данными, и `AppDatabase` - синглтон для доступа к БД. В файле `MainViewModel.kt` заменил хранение списка задач в памяти на получение данных из Room через `Flow`, а методы работы с задачами теперь вызывают `DAO` внутри корутин. 
+Выполняя задание, создал интерфейс `TaskRepository`, определяющий контракт для работы с задачами, и его реализацию `TaskRepositoryImpl`, которая делегирует вызовы к DAO. В файле `MainViewModel.kt` заменил прямое обращение к DAO на использование репозитория, благодаря чему ViewModel перестала зависеть от конкретной реализации базы данных. В `MainActivity.kt` обновил создание репозитория и передачу его во ViewModel через фабрику.
 
-В адаптере `TaskAdapter.kt` обновил адаптер для работы с `TaskEntity`. В файле `MainActivity.kt` создал фабрику для передачи базы данных в ViewModel и обновил подписку на Flow.
+Помимо этого, выполнил индивидуальное задание №1 - создал альтернативную реализацию `InMemoryTaskRepository`, которая хранит данные в памяти. Переключение между `TaskRepositoryImpl` (Room) и `InMemoryTaskRepository` показало, что ViewModel работает без изменений, что демонстрирует гибкость архитектуры.
 
-Помимо этого, выполнил индивидуальное задание №2 - реализовал поиск задач по названию с автоматической фильтрацией списка при вводе текста. Также было реализовано индивидуальное задание №1 - сортировка задач: сначала невыполненные, затем выполненные, внутри каждой группы новые задачи сверху располагаются сверху.
+Таким образом, благодаря добавлению Repository, ViewModel теперь не знает, откуда берутся данные - из БД, сети или памяти. Это позволяет легко подменять источник данных без изменения кода ViewModel, упрощает тестирование и соблюдает принцип инверсии зависимостей.
 
-Узнал, что Room позволяет проверять SQL-запросы на этапе компиляции, автоматически конвертировать данные в объекты и легко работать с БД в асинхронном стиле через корутины.
+Это позволяет при необходимости добавить сетевой источник данных и объединять данные из БД и API в одном репозитории. Архитектура становится готовой к масштабированию без изменения существующих классов.
 
-Улучшил архитектуру приложения с помощью Room - данные теперь сохраняются между сессиями, снижается нагрузка на память за счёт хранения только нужного в данный момент, упрощается тестирование благодаря изоляции БД, а реактивный подход с Flow обеспечивает автоматическое обновление UI при изменении данных.
-
-Результат работы **успешно** протестирован на эмуляторе - данные сохраняются после перезапуска приложения.
+Результат работы **успешно** протестирован на эмуляторе - вся функциональность, реализованная в предыдущих работах, сохранена. Рефакторинг не повлиял на поведение приложения, но значительно улучшил его архитектуру.

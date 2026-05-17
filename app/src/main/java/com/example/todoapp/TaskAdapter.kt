@@ -108,4 +108,8 @@ class TaskAdapter(
 
         notifyDataSetChanged()
     }
+
+    fun getTaskAtPosition(position: Int): TaskEntity {
+        return tasks[position]
+    }
 }

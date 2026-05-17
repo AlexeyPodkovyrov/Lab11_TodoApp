@@ -19,6 +19,7 @@ class DetailActivity : AppCompatActivity() {
 
     private var taskId: Long = -1
     private var taskText: String = ""
+    private var taskNumber: Int = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -32,8 +33,9 @@ class DetailActivity : AppCompatActivity() {
         // Получение данных
         taskId = intent.getLongExtra("task_id", -1)
         taskText = intent.getStringExtra("task_text") ?: "Нет данных"
+        taskNumber = intent.getIntExtra("task_number", 0)
 
-        textTitle.text = "Редактирование задачи"
+        textTitle.text = "Задача №$taskNumber"
         editTextTask.setText(taskText)
         editTextTask.setSelection(taskText.length)
 
